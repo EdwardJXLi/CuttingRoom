@@ -1,6 +1,7 @@
 import { AboutPopup } from "about.slint";
 import { Palette } from "theme.slint";
 import { WorkspaceHeader, WorkspaceView } from "workspace-header.slint";
+import { PhotoWorkspace } from "workspace.slint";
 
 import "assets/fonts/NotoSans-Regular.ttf";
 import "assets/fonts/NotoSans-SemiBold.ttf";
@@ -17,6 +18,7 @@ export component MainWindow inherits Window {
 
     in property <string> app-version;
     private property <WorkspaceView> view: WorkspaceView.grid;
+    private property <bool> show-inspector: true;
 
     MenuBar {
         Menu {
@@ -51,11 +53,17 @@ export component MainWindow inherits Window {
                 shortcut: option.shortcut;
                 activated => { root.view = option.view; }
             }
+            MenuSeparator {}
+            MenuItem {
+                title: "Photo Information";
+                shortcut: @keys(I);
+                checkable: true;
+                checked <=> root.show-inspector;
+            }
         }
     }
 
     VerticalLayout {
-        alignment: start;
         spacing: 0px;
 
         header := WorkspaceHeader {
@@ -63,6 +71,11 @@ export component MainWindow inherits Window {
             view <=> root.view;
         }
         Rectangle { height: 1px; background: Palette.line; }
+        PhotoWorkspace {
+            vertical-stretch: 1;
+            view: root.view;
+            show-inspector: root.show-inspector;
+        }
     }
 
     about := AboutPopup {

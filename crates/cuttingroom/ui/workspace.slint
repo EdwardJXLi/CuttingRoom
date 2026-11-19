@@ -1,0 +1,125 @@
+import { StandardTableView } from "std-widgets.slint";
+import { Palette } from "theme.slint";
+import { ResizeHandle } from "resize-handle.slint";
+import { WorkspaceView } from "workspace-header.slint";
+
+component WorkspacePane inherits Rectangle {
+    in property <string> heading;
+
+    background: Palette.panel;
+    accessible-role: complementary;
+    accessible-label: root.heading;
+
+    Text {
+        x: 16px;
+        y: 0px;
+        width: parent.width - 32px;
+        height: 38px;
+        text: root.heading;
+        color: Palette.text;
+        font-weight: 600;
+        vertical-alignment: center;
+        overflow: elide;
+        accessible-role: none;
+    }
+}
+
+export component PhotoWorkspace inherits VerticalLayout {
+    in property <WorkspaceView> view;
+    in property <bool> show-inspector;
+
+    private property <bool> browsing: root.view != WorkspaceView.photo;
+    private property <length> handle-thickness: 7px;
+    private property <length> minimum-collections-width: 152px;
+    private property <length> maximum-collections-width: 330px;
+    private property <length> minimum-inspector-width: 228px;
+    private property <length> maximum-inspector-width: 490px;
+    private property <length> preferred-collections-width: 184px;
+    private property <length> preferred-inspector-width: 254px;
+    private property <length> filmstrip-height: 114px;
+
+    spacing: 0px;
+
+    docks := Rectangle {
+        vertical-stretch: 1;
+
+        private property <length> minimum-center-width: root.browsing ? 436px : 330px;
+        private property <length> left-handle-width: root.browsing ? root.handle-thickness : 0px;
+        private property <length> right-handle-width: root.show-inspector ? root.handle-thickness : 0px;
+        private property <length> dock-space: self.width - self.minimum-center-width
+            - self.left-handle-width - self.right-handle-width;
+        private property <length> left-width: root.browsing ? min(root.preferred-collections-width,
+            self.dock-space - (root.show-inspector ? root.minimum-inspector-width : 0px)) : 0px;
+        private property <length> right-width: root.show-inspector
+            ? min(root.preferred-inspector-width, self.dock-space - self.left-width) : 0px;
+        private property <length> center-x: self.left-width + self.left-handle-width;
+        private property <length> center-width: self.width - self.center-x
+            - self.right-handle-width - self.right-width;
+
+        if root.browsing: WorkspacePane {
+            x: 0px;
+            width: docks.left-width;
+            heading: "Collections";
+        }
+
+        if root.browsing: ResizeHandle {
+            x: docks.left-width;
+            width: docks.left-handle-width;
+            label: "Resize Collections";
+            size: docks.left-width;
+            minimum-size: root.minimum-collections-width;
+            maximum-size: min(root.maximum-collections-width, docks.dock-space - docks.right-width);
+            resized(size) => { root.preferred-collections-width = size; }
+        }
+
+        Rectangle {
+            x: docks.center-x;
+            width: docks.center-width;
+            background: Palette.canvas;
+            accessible-role: main;
+
+            if root.view == WorkspaceView.list: StandardTableView {
+                width: 100%;
+                height: 100%;
+                columns: [
+                    { title: "Filename", min-width: 140px, horizontal-stretch: 1 },
+                    { title: "Captured", min-width: 100px },
+                    { title: "Status / rating", min-width: 150px },
+                ];
+            }
+        }
+
+        if root.show-inspector: ResizeHandle {
+            x: docks.center-x + docks.center-width;
+            width: docks.right-handle-width;
+            label: "Resize Photo Information";
+            size: docks.right-width;
+            minimum-size: root.minimum-inspector-width;
+            maximum-size: min(root.maximum-inspector-width, docks.dock-space - docks.left-width);
+            reverse: true;
+            resized(size) => { root.preferred-inspector-width = size; }
+        }
+
+        if root.show-inspector: WorkspacePane {
+            x: docks.width - self.width;
+            width: docks.right-width;
+            heading: "Photo Information";
+        }
+    }
+
+    if !root.browsing: ResizeHandle {
+        height: root.handle-thickness;
+        label: "Resize Filmstrip";
+        size: root.filmstrip-height;
+        minimum-size: 104px;
+        maximum-size: 240px;
+        resize-axis: Orientation.vertical;
+        reverse: true;
+        resized(size) => { root.filmstrip-height = size; }
+    }
+
+    if !root.browsing: WorkspacePane {
+        height: 38px + root.filmstrip-height;
+        heading: "Filmstrip";
+    }
+}

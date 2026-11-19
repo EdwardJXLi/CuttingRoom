@@ -1,0 +1,97 @@
+import { Palette } from "theme.slint";
+
+export component ResizeHandle inherits Rectangle {
+    in property <string> label;
+    in property <Orientation> resize-axis: Orientation.horizontal;
+    in property <bool> reverse;
+    in property <length> size;
+    in property <length> minimum-size;
+    in property <length> maximum-size;
+    callback resized(length);
+
+    private property <bool> vertical: root.resize-axis == Orientation.vertical;
+    private property <bool> highlighted: drag.pressed || drag.has-hover || keyboard.has-focus;
+    private property <length> step: 12px;
+    private property <length> forward-step: root.reverse ? -root.step : root.step;
+
+    background: root.highlighted ? Palette.hover : Palette.canvas;
+    border-width: keyboard.has-focus ? 1px : 0px;
+    border-color: Palette.focus;
+    forward-focus: keyboard;
+
+    accessible-role: slider;
+    accessible-label: root.label;
+    accessible-orientation: root.resize-axis;
+    accessible-value: root.size / 1px;
+    accessible-value-minimum: root.minimum-size / 1px;
+    accessible-value-maximum: root.maximum-size / 1px;
+    accessible-value-step: root.step / 1px;
+    accessible-action-increment => { root.resize-to(root.size + root.step); }
+    accessible-action-decrement => { root.resize-to(root.size - root.step); }
+    accessible-action-set-value(value) => {
+        if value.is-float() {
+            root.resize-to(value.to-float() * 1px);
+        }
+    }
+
+    function resize-to(requested: length) {
+        let bounded = max(root.minimum-size, min(root.maximum-size, requested));
+        if bounded != root.size {
+            root.resized(bounded);
+        }
+    }
+
+    Rectangle {
+        width: root.vertical ? parent.width : 1px;
+        height: root.vertical ? 1px : parent.height;
+        background: Palette.line;
+    }
+
+    Rectangle {
+        width: root.vertical ? 30px : 2px;
+        height: root.vertical ? 2px : 30px;
+        background: root.highlighted ? Palette.focus : #777777;
+    }
+
+    drag := TouchArea {
+        private property <length> initial-position;
+        private property <length> initial-size;
+
+        mouse-cursor: root.vertical ? ns-resize : ew-resize;
+
+        function position() -> length {
+            return root.vertical ? self.absolute-position.y + self.mouse-y
+                : self.absolute-position.x + self.mouse-x;
+        }
+
+        pointer-event(event) => {
+            if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                self.initial-position = self.position();
+                self.initial-size = root.size;
+            }
+        }
+
+        moved => {
+            if self.pressed {
+                let distance = self.position() - self.initial-position;
+                root.resize-to(self.initial-size + (root.reverse ? -distance : distance));
+            }
+        }
+    }
+
+    keyboard := FocusScope {
+        width: 0px;
+
+        key-pressed(event) => {
+            if event.text == (root.vertical ? Key.UpArrow : Key.LeftArrow) {
+                root.resize-to(root.size - root.forward-step);
+                return accept;
+            }
+            if event.text == (root.vertical ? Key.DownArrow : Key.RightArrow) {
+                root.resize-to(root.size + root.forward-step);
+                return accept;
+            }
+            return reject;
+        }
+    }
+}
