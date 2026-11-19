@@ -23,9 +23,17 @@ export component MainWindow inherits Window {
     MenuBar {
         Menu {
             title: "CuttingRoom";
-            MenuItem { title: "About CuttingRoom"; activated => { about.show(); } }
+            MenuItem {
+                title: "About CuttingRoom";
+                role: MenuItemRole.about;
+                activated => { about.show(); }
+            }
             MenuSeparator {}
-            MenuItem { title: "Preferences"; enabled: false; }
+            MenuItem {
+                title: "Preferences";
+                role: MenuItemRole.preferences;
+                enabled: false;
+            }
         }
         Menu {
             title: "File";
