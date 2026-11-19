@@ -5,5 +5,7 @@ use slint::ComponentHandle;
 slint::include_modules!();
 
 fn main() -> Result<(), slint::PlatformError> {
-    MainWindow::new()?.run()
+    let window = MainWindow::new()?;
+    window.set_app_version(env!("CARGO_PKG_VERSION").into());
+    window.run()
 }

@@ -1,0 +1,151 @@
+import { Palette } from "theme.slint";
+
+export enum WorkspaceView { grid, list, photo }
+
+component ViewTab inherits Rectangle {
+    in property <string> text;
+    in property <keys> shortcut;
+    in property <bool> selected;
+    callback activated();
+    callback focus-previous();
+    callback focus-next();
+
+    private property <length> inset: 14px;
+    private property <bool> pointer-focused;
+    private property <string> hint: root.shortcut.to-string();
+
+    height: 40px;
+    preferred-width: content.preferred-width;
+    horizontal-stretch: 0;
+    background: pointer.has-hover ? Palette.hover : transparent;
+    border-width: keyboard.has-focus && !root.pointer-focused ? 1px : 0px;
+    border-color: Palette.focus;
+    forward-focus: keyboard;
+
+    accessible-role: tab;
+    accessible-label: root.text + ", " + root.hint;
+    accessible-item-selectable: true;
+    accessible-item-selected: root.selected;
+    accessible-action-default => { root.activated(); }
+
+    public function focus-from-keyboard() {
+        root.pointer-focused = false;
+        keyboard.focus();
+    }
+
+    content := HorizontalLayout {
+        padding-left: root.inset;
+        padding-right: root.inset;
+        spacing: 8px;
+
+        Text {
+            text: root.text;
+            color: root.selected ? Palette.text : Palette.muted;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+        Text {
+            text: root.hint;
+            font-size: 12px;
+            color: Palette.muted;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+    }
+
+    if root.selected: Rectangle {
+        x: root.inset;
+        y: parent.height - self.height;
+        width: parent.width - 2 * root.inset;
+        height: 2px;
+        background: Palette.text;
+    }
+
+    pointer := TouchArea {
+        clicked => {
+            root.pointer-focused = true;
+            keyboard.focus();
+            root.activated();
+        }
+    }
+
+    keyboard := FocusScope {
+        width: 0px;
+        focus-on-tab-navigation: root.selected;
+        focus-lost => { root.pointer-focused = false; }
+
+        key-pressed(event) => {
+            if event.text == Key.LeftArrow {
+                root.focus-previous();
+                return accept;
+            }
+            if event.text == Key.RightArrow {
+                root.focus-next();
+                return accept;
+            }
+            if event.text == Key.Return || event.text == Key.Space {
+                root.pointer-focused = false;
+                root.activated();
+                return accept;
+            }
+            return reject;
+        }
+    }
+}
+
+export component WorkspaceHeader inherits Rectangle {
+    in property <string> project-title;
+    in-out property <WorkspaceView> view;
+    in property <keys> grid-shortcut: @keys(G);
+    in property <keys> list-shortcut: @keys(L);
+    in property <keys> photo-shortcut: @keys(E);
+
+    height: 54px;
+    background: Palette.panel;
+
+    Text {
+        x: 20px;
+        width: max(0px, tabs.x - 36px);
+        height: parent.height;
+        text: root.project-title;
+        color: Palette.text;
+        font-size: 16px;
+        font-weight: 600;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    tabs := HorizontalLayout {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: self.preferred-width;
+        height: self.preferred-height;
+        spacing: 6px;
+        accessible-role: tab-list;
+
+        grid := ViewTab {
+            text: "Grid";
+            shortcut: root.grid-shortcut;
+            selected: root.view == WorkspaceView.grid;
+            activated => { root.view = WorkspaceView.grid; }
+            focus-previous => { photo.focus-from-keyboard(); }
+            focus-next => { list.focus-from-keyboard(); }
+        }
+        list := ViewTab {
+            text: "List";
+            shortcut: root.list-shortcut;
+            selected: root.view == WorkspaceView.list;
+            activated => { root.view = WorkspaceView.list; }
+            focus-previous => { grid.focus-from-keyboard(); }
+            focus-next => { photo.focus-from-keyboard(); }
+        }
+        photo := ViewTab {
+            text: "Photo";
+            shortcut: root.photo-shortcut;
+            selected: root.view == WorkspaceView.photo;
+            activated => { root.view = WorkspaceView.photo; }
+            focus-previous => { list.focus-from-keyboard(); }
+            focus-next => { grid.focus-from-keyboard(); }
+        }
+    }
+}

@@ -1,6 +1,73 @@
+import { AboutPopup } from "about.slint";
+import { Palette } from "theme.slint";
+import { WorkspaceHeader, WorkspaceView } from "workspace-header.slint";
+
+import "assets/fonts/NotoSans-Regular.ttf";
+import "assets/fonts/NotoSans-SemiBold.ttf";
+
 export component MainWindow inherits Window {
     title: "CuttingRoom";
     preferred-width: 1280px;
     preferred-height: 820px;
-    background: #1a1a1a;
+    min-width: 850px;
+    min-height: 580px;
+    background: Palette.canvas;
+    default-font-family: "Noto Sans";
+    default-font-size: 14px;
+
+    in property <string> app-version;
+    private property <WorkspaceView> view: WorkspaceView.grid;
+
+    MenuBar {
+        Menu {
+            title: "CuttingRoom";
+            MenuItem { title: "About CuttingRoom"; activated => { about.show(); } }
+            MenuSeparator {}
+            MenuItem { title: "Preferences"; enabled: false; }
+        }
+        Menu {
+            title: "File";
+            MenuItem { title: "Export Metadata"; enabled: false; }
+            MenuSeparator {}
+            MenuItem {
+                title: "Close Window";
+                shortcut: @keys(Control + W);
+                activated => { root.close(); }
+            }
+        }
+        Menu {
+            title: "Edit";
+            MenuItem { title: "Undo"; enabled: false; }
+            MenuItem { title: "Redo"; enabled: false; }
+        }
+        Menu {
+            title: "View";
+            for option in [
+                { title: "Grid", shortcut: header.grid-shortcut, view: WorkspaceView.grid },
+                { title: "List", shortcut: header.list-shortcut, view: WorkspaceView.list },
+                { title: "Photo", shortcut: header.photo-shortcut, view: WorkspaceView.photo },
+            ]: MenuItem {
+                title: option.title;
+                shortcut: option.shortcut;
+                activated => { root.view = option.view; }
+            }
+        }
+    }
+
+    VerticalLayout {
+        alignment: start;
+        spacing: 0px;
+
+        header := WorkspaceHeader {
+            project-title: "No project open";
+            view <=> root.view;
+        }
+        Rectangle { height: 1px; background: Palette.line; }
+    }
+
+    about := AboutPopup {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        version: root.app-version;
+    }
 }
