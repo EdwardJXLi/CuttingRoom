@@ -1,0 +1,98 @@
+name: Build binaries
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install build dependencies
+        run: |
+          sudo dpkg --add-architecture arm64
+          sudo sed -i '/^Types:/a Architectures-Remove: arm64' /etc/apt/sources.list.d/ubuntu.sources
+          sudo tee /etc/apt/sources.list.d/ubuntu-arm64.sources >/dev/null <<'EOF'
+          Types: deb
+          URIs: https://ports.ubuntu.com/ubuntu-ports/
+          Suites: noble noble-updates noble-security
+          Components: main
+          Architectures: arm64
+          Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+          EOF
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            clang lld llvm libarchive-tools pkg-config g++-aarch64-linux-gnu libfontconfig-dev libfontconfig-dev:arm64
+
+      - name: Install Rust targets
+        run: |
+          rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-pc-windows-msvc \
+            aarch64-apple-darwin x86_64-apple-darwin
+
+      - name: Install cross-compilers
+        run: |
+          python3 -m venv "$RUNNER_TEMP/cross-tools"
+          "$RUNNER_TEMP/cross-tools/bin/python" -m pip install cargo-xwin==0.23.1 cargo-zigbuild==0.24.1 ziglang==0.16.0
+          printf '%s\n' "$RUNNER_TEMP/cross-tools/bin" >> "$GITHUB_PATH"
+
+      - name: Build Linux x86-64
+        run: cargo build -p cuttingroom --release --locked --target x86_64-unknown-linux-gnu
+
+      - name: Build Linux ARM64
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          PKG_CONFIG_ALLOW_CROSS: '1'
+          PKG_CONFIG_LIBDIR_aarch64_unknown_linux_gnu: /usr/lib/aarch64-linux-gnu/pkgconfig
+        run: cargo build -p cuttingroom --release --locked --target aarch64-unknown-linux-gnu
+
+      - name: Build Windows x86-64
+        env:
+          XWIN_ARCH: x86_64
+        run: cargo xwin build -p cuttingroom --release --locked --target x86_64-pc-windows-msvc
+
+      - name: Prepare macOS SDK
+        shell: bash
+        run: |
+          sdk_name=MacOSX26.5.sdk
+          sdk_path="Library/Developer/CommandLineTools/SDKs/$sdk_name"
+          sdk_package="$RUNNER_TEMP/macos-sdk.pkg"
+          curl -fsSL --retry 3 -o "$sdk_package" \
+            'https://swcdn.apple.com/content/downloads/09/08/047-91568-A_Y1CFZWQCD4/4xekpyz43i26dbp4enxfro8eb1q7wiujh5/CLTools_macOSNMOS_SDK.pkg'
+          printf '%s  %s\n' \
+            '5db8b5a06a489a7d3ec587ebb7e01be55163128029923fc24edcad47faecd67830193c0d91e2643ee0e92f2ccca37adf20e4c42cf8de5784666f8663638b5cc5' \
+            "$sdk_package" | sha512sum --check
+          bsdtar -xOf "$sdk_package" Payload \
+            | python3 .github/scripts/unpack-pbzx.py \
+            | bsdtar -xf - -C "$RUNNER_TEMP" "$sdk_path"
+          mv "$RUNNER_TEMP/$sdk_path" "$RUNNER_TEMP/$sdk_name"
+          rm "$sdk_package"
+          printf 'SDKROOT=%s/%s\nMACOSX_DEPLOYMENT_TARGET=14.0\n' "$RUNNER_TEMP" "$sdk_name" >> "$GITHUB_ENV"
+
+      - name: Build macOS Apple Silicon
+        run: cargo zigbuild -p cuttingroom --release --locked --target aarch64-apple-darwin
+
+      - name: Build macOS Intel
+        run: cargo zigbuild -p cuttingroom --release --locked --target x86_64-apple-darwin
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cuttingroom-binaries
+          path: |
+            target/x86_64-unknown-linux-gnu/release/cuttingroom
+            target/aarch64-unknown-linux-gnu/release/cuttingroom
+            target/x86_64-pc-windows-msvc/release/cuttingroom.exe
+            target/aarch64-apple-darwin/release/cuttingroom
+            target/x86_64-apple-darwin/release/cuttingroom
+          if-no-files-found: error
