@@ -1,0 +1,84 @@
+import { Palette } from "theme.slint";
+
+export component ActionButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    in property <bool> primary;
+    callback clicked();
+
+    min-width: label.preferred-width + 24px;
+    min-height: 34px;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    forward-focus: keyboard;
+    background: root.primary ? #dbdbdb : #3b3b3b;
+    border-width: 1px;
+    border-color: root.primary ? transparent : #929292;
+
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if root.enabled {
+            root.clicked();
+        }
+    }
+
+    states [
+        disabled when !root.enabled: {
+            root.background: Palette.panel;
+            root.border-color: Palette.line;
+            label.color: #8f8f8f;
+        }
+        pressed when pointer.pressed: {
+            root.background: root.primary ? Palette.focus : #303030;
+            root.border-color: root.primary ? transparent : #a2a2a2;
+        }
+        hovered when pointer.has-hover: {
+            root.background: root.primary ? Palette.text : #484848;
+            root.border-color: root.primary ? transparent : #a5a5a5;
+        }
+    ]
+
+    label := Text {
+        x: 12px;
+        width: parent.width - 24px;
+        height: parent.height;
+        text: root.text;
+        color: root.primary ? Palette.canvas : Palette.text;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        overflow: elide;
+        accessible-role: none;
+    }
+
+    if keyboard.has-focus: Rectangle {
+        x: -2px;
+        y: -2px;
+        width: parent.width + 4px;
+        height: parent.height + 4px;
+        border-width: 1px;
+        border-color: Palette.focus;
+    }
+
+    pointer := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+
+    keyboard := FocusScope {
+        enabled: root.enabled;
+        focus-on-click: false;
+
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                if !event.repeat {
+                    root.clicked();
+                }
+                return accept;
+            }
+            return reject;
+        }
+    }
+}

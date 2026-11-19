@@ -1,7 +1,10 @@
 import { AboutPopup } from "about.slint";
+import { Message, MessageDialog, MessageSeverity } from "message-dialog.slint";
 import { Palette } from "theme.slint";
 import { WorkspaceHeader, WorkspaceView } from "workspace-header.slint";
 import { PhotoWorkspace } from "workspace.slint";
+
+export { Message, MessageSeverity }
 
 import "assets/fonts/NotoSans-Regular.ttf";
 import "assets/fonts/NotoSans-SemiBold.ttf";
@@ -17,8 +20,17 @@ export component MainWindow inherits Window {
     default-font-size: 14px;
 
     in property <string> app-version;
+    callback message-dismissed(accepted: bool);
     private property <WorkspaceView> view: WorkspaceView.grid;
     private property <bool> show-inspector: true;
+    private property <Message> current-message;
+
+    public function show-message(message: Message) {
+        root.current-message = message;
+        if !message-dialog.is-open {
+            message-dialog.show();
+        }
+    }
 
     MenuBar {
         Menu {
@@ -26,6 +38,7 @@ export component MainWindow inherits Window {
             MenuItem {
                 title: "About CuttingRoom";
                 role: MenuItemRole.about;
+                enabled: !message-dialog.is-open;
                 activated => { about.show(); }
             }
             MenuSeparator {}
@@ -42,6 +55,7 @@ export component MainWindow inherits Window {
             MenuItem {
                 title: "Close Window";
                 shortcut: @keys(Control + W);
+                enabled: !message-dialog.is-open;
                 activated => { root.close(); }
             }
         }
@@ -59,12 +73,14 @@ export component MainWindow inherits Window {
             ]: MenuItem {
                 title: option.title;
                 shortcut: option.shortcut;
+                enabled: !message-dialog.is-open;
                 activated => { root.view = option.view; }
             }
             MenuSeparator {}
             MenuItem {
                 title: "Photo Information";
                 shortcut: @keys(I);
+                enabled: !message-dialog.is-open;
                 checkable: true;
                 checked <=> root.show-inspector;
             }
@@ -83,7 +99,17 @@ export component MainWindow inherits Window {
             vertical-stretch: 1;
             view: root.view;
             show-inspector: root.show-inspector;
+            message-requested(message) => { root.show-message(message); }
         }
+    }
+
+    message-dialog := MessageDialog {
+        message: root.current-message;
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        dismissed(accepted) => { root.message-dismissed(accepted); }
     }
 
     about := AboutPopup {

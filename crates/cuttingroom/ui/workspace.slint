@@ -1,10 +1,14 @@
 import { StandardTableView } from "std-widgets.slint";
+import { ActionButton } from "action-button.slint";
+import { Message, MessageSeverity } from "message-dialog.slint";
 import { Palette } from "theme.slint";
 import { ResizeHandle } from "resize-handle.slint";
 import { WorkspaceView } from "workspace-header.slint";
 
 component WorkspacePane inherits Rectangle {
     in property <string> heading;
+
+    @children
 
     background: Palette.panel;
     accessible-role: complementary;
@@ -27,6 +31,7 @@ component WorkspacePane inherits Rectangle {
 export component PhotoWorkspace inherits VerticalLayout {
     in property <WorkspaceView> view;
     in property <bool> show-inspector;
+    callback message-requested(Message);
 
     private property <bool> browsing: root.view != WorkspaceView.photo;
     private property <length> handle-thickness: 7px;
@@ -60,6 +65,30 @@ export component PhotoWorkspace inherits VerticalLayout {
             x: 0px;
             width: docks.left-width;
             heading: "Collections";
+
+            VerticalLayout {
+                x: 16px;
+                y: 42px;
+                width: parent.width - 32px;
+                height: self.preferred-height;
+                spacing: 6px;
+
+                for demo in [
+                    { label: "Test Info", severity: MessageSeverity.info,
+                        heading: "Project ready", message: "Your photos are ready to browse." },
+                    { label: "Test Warning", severity: MessageSeverity.warning,
+                        heading: "Drive disconnected", message: "Reconnect the drive to view the photos in this project." },
+                    { label: "Test Error", severity: MessageSeverity.error,
+                        heading: "Could not open project", message: "Check that you have permission to read the folder and try again." },
+                ]: ActionButton {
+                    text: demo.label;
+                    horizontal-stretch: 1;
+                    clicked => {
+                        root.message-requested({ severity: demo.severity, heading: demo.heading,
+                            text: demo.message, cancellable: true });
+                    }
+                }
+            }
         }
 
         if root.browsing: ResizeHandle {

@@ -1,0 +1,127 @@
+import { ScrollView } from "std-widgets.slint";
+import { ActionButton } from "action-button.slint";
+import { Palette } from "theme.slint";
+
+export enum MessageSeverity { info, warning, error }
+
+export struct Message { severity: MessageSeverity, heading: string, text: string, cancellable: bool }
+
+export component MessageDialog inherits PopupWindow {
+    in property <Message> message;
+    callback dismissed(accepted: bool);
+
+    private property <string> severity-label: root.message.severity == MessageSeverity.error ? "Error"
+        : root.message.severity == MessageSeverity.warning ? "Warning" : "Information";
+    private property <image> severity-icon: root.message.severity == MessageSeverity.error ? @image-url("assets/dialog-error.svg")
+        : root.message.severity == MessageSeverity.warning ? @image-url("assets/dialog-warning.svg") : @image-url("assets/dialog-info.svg");
+    private property <color> severity-color: root.message.severity == MessageSeverity.error ? #ef9b94
+        : root.message.severity == MessageSeverity.warning ? #e6c66c : #87b6eb;
+    private property <length> icon-size: 24px;
+    private property <length> title-gap: 12px;
+
+    close-policy: no-auto-close;
+    init => { keyboard.focus(); }
+    changed message => { body.content-y = 0px; }
+
+    function dismiss(accepted: bool) {
+        root.close();
+        root.dismissed(accepted);
+    }
+
+    Rectangle { background: #00000080; }
+
+    keyboard := FocusScope {
+        forward-focus: ok-button;
+        focus-on-click: false;
+        focus-on-tab-navigation: false;
+
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.dismiss(false);
+                return accept;
+            }
+            if body.content-height > body.height && (event.text == Key.UpArrow || event.text == Key.DownArrow) {
+                let step = event.text == Key.UpArrow ? 32px : -32px;
+                body.content-y = clamp(body.content-y + step, body.height - body.content-height, 0px);
+                return accept;
+            }
+            return reject;
+        }
+
+        Rectangle {
+            width: min(440px, parent.width - 32px);
+            height: content.preferred-height;
+            background: Palette.panel;
+            border-width: 1px;
+            border-color: #777777;
+            accessible-role: groupbox;
+            accessible-label: root.severity-label + ": " + root.message.heading;
+
+            content := VerticalLayout {
+                padding: 24px;
+                spacing: 16px;
+
+                HorizontalLayout {
+                    spacing: root.title-gap;
+
+                    Image {
+                        y: 2px;
+                        source: root.severity-icon;
+                        colorize: root.severity-color;
+                        width: root.icon-size;
+                        height: root.icon-size;
+                        accessible-role: none;
+                    }
+                    Text {
+                        text: root.message.heading;
+                        color: Palette.text;
+                        font-size: 20px;
+                        font-weight: 600;
+                        wrap: word-wrap;
+                        vertical-alignment: center;
+                        accessible-role: none;
+                    }
+                }
+
+                HorizontalLayout {
+                    padding-left: root.icon-size + root.title-gap;
+
+                    body := ScrollView {
+                        min-height: min(200px, message-text.preferred-height);
+                        max-height: self.min-height;
+                        preferred-height: self.min-height;
+                        content-height: message-text.preferred-height;
+                        horizontal-scrollbar-policy: always-off;
+
+                        message-text := Text {
+                            x: 0px;
+                            width: body.visible-width - 16px;
+                            height: self.preferred-height;
+                            text: root.message.text;
+                            color: Palette.muted;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+
+                    if root.message.cancellable: ActionButton {
+                        text: "Cancel";
+                        min-width: 80px;
+                        clicked => { root.dismiss(false); }
+                    }
+
+                    ok-button := ActionButton {
+                        text: "OK";
+                        min-width: 80px;
+                        primary: true;
+                        clicked => { root.dismiss(true); }
+                    }
+                }
+            }
+        }
+    }
+}
