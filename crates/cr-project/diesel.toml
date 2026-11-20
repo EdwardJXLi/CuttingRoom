@@ -1,0 +1,5 @@
+[print_schema]
+sqlite_integer_primary_key_is_bigint = false
+
+[migrations_directory]
+dir = "migrations"

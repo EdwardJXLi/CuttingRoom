@@ -1,6 +1,8 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
-use slint::ComponentHandle;
+use std::{env, error::Error, path::PathBuf, process::ExitCode};
+
+mod app;
 
 #[cfg(target_os = "macos")]
 mod macos {
@@ -13,8 +15,20 @@ mod macos {
 
 slint::include_modules!();
 
-fn main() -> Result<(), slint::PlatformError> {
-    let window = MainWindow::new()?;
-    window.set_app_version(env!("CARGO_PKG_VERSION").into());
-    window.run()
+fn main() -> Result<ExitCode, Box<dyn Error>> {
+    let mut args = env::args_os().skip(1);
+    let folder = args.next();
+    if args.next().is_some() {
+        eprintln!("Usage: cuttingroom [FOLDER]");
+        return Ok(ExitCode::FAILURE);
+    }
+    if folder
+        .as_deref()
+        .is_some_and(|arg| arg == "--help" || arg == "-h")
+    {
+        println!("Usage: cuttingroom [FOLDER]");
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    app::run(folder.map(PathBuf::from))
 }

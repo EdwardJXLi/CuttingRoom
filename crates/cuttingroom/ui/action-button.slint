@@ -4,9 +4,10 @@ export component ActionButton inherits Rectangle {
     in property <string> text;
     in property <bool> enabled: true;
     in property <bool> primary;
+    in property <length> button-min-width;
     callback clicked();
 
-    min-width: label.preferred-width + 24px;
+    min-width: max(root.button-min-width, label.preferred-width + 24px);
     min-height: 34px;
     horizontal-stretch: 0;
     vertical-stretch: 0;

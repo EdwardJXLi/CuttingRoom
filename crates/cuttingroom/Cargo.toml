@@ -5,6 +5,8 @@ edition = "2024"
 publish = false
 
 [dependencies]
+async-channel = "=2.5.0"
+cr-project = { path = "../cr-project" }
 slint = { version = "=1.19.0", default-features = false, features = [
     "accessibility",
     "backend-winit",

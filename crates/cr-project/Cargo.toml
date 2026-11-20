@@ -1,0 +1,21 @@
+[package]
+name = "cr-project"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+diesel = { version = "=2.4.0", default-features = false, features = ["sqlite"] }
+libsqlite3-sys = { version = "=0.40.0", features = ["bundled"] }
+percent-encoding = "=2.3.2"
+tempfile = "=3.27.0"
+thiserror = "=2.0.21"
+
+[dev-dependencies]
+rusqlite = { version = "=0.43.0", default-features = false, features = ["libsqlite3-sys"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "=0.2.191"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Storage_FileSystem"] }

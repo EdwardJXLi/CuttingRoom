@@ -4,7 +4,14 @@ import { Palette } from "theme.slint";
 
 export enum MessageSeverity { info, warning, error }
 
-export struct Message { severity: MessageSeverity, heading: string, text: string, cancellable: bool }
+export struct Message {
+    severity: MessageSeverity,
+    heading: string,
+    text: string,
+    cancellable: bool,
+    accept-label: string,
+    cancel-primary: bool,
+}
 
 export component MessageDialog inherits PopupWindow {
     in property <Message> message;
@@ -20,8 +27,21 @@ export component MessageDialog inherits PopupWindow {
     private property <length> title-gap: 12px;
 
     close-policy: no-auto-close;
-    init => { keyboard.focus(); }
-    changed message => { body.content-y = 0px; }
+    init => { root.focus-default(); }
+    changed message => {
+        body.content-y = 0px;
+        if root.is-open {
+            root.focus-default();
+        }
+    }
+
+    function focus-default() {
+        if root.message.cancellable {
+            cancel-button.focus();
+        } else {
+            ok-button.focus();
+        }
+    }
 
     function dismiss(accepted: bool) {
         root.close();
@@ -31,7 +51,6 @@ export component MessageDialog inherits PopupWindow {
     Rectangle { background: #00000080; }
 
     keyboard := FocusScope {
-        forward-focus: ok-button;
         focus-on-click: false;
         focus-on-tab-navigation: false;
 
@@ -108,16 +127,19 @@ export component MessageDialog inherits PopupWindow {
                     alignment: end;
                     spacing: 8px;
 
-                    if root.message.cancellable: ActionButton {
+                    cancel-button := ActionButton {
                         text: "Cancel";
-                        min-width: 80px;
+                        visible: root.message.cancellable;
+                        enabled: root.message.cancellable;
+                        button-min-width: 80px;
+                        primary: root.message.cancel-primary;
                         clicked => { root.dismiss(false); }
                     }
 
                     ok-button := ActionButton {
-                        text: "OK";
-                        min-width: 80px;
-                        primary: true;
+                        text: root.message.accept-label == "" ? "OK" : root.message.accept-label;
+                        button-min-width: 80px;
+                        primary: !root.message.cancellable || !root.message.cancel-primary;
                         clicked => { root.dismiss(true); }
                     }
                 }
