@@ -9,7 +9,7 @@ use std::{
 use image::{DynamicImage, GrayImage, RgbImage};
 use libloading::Library;
 
-use super::{Pixels, decode_jpeg, make_preview, native_library, valid_dimensions};
+use super::{DecodedImage, decode_jpeg, native_library, valid_dimensions};
 
 #[cfg(target_os = "linux")]
 const LIBRARIES: &[&str] = &["libraw_r.so.25", "libraw.so.25"];
@@ -36,20 +36,27 @@ struct ProcessedImage {
     data: [u8; 0],
 }
 
+type MakeImage = unsafe extern "C" fn(*mut c_void, *mut c_int) -> *mut ProcessedImage;
+
 pub(super) struct RawDecoder {
     _library: Library,
     init: unsafe extern "C" fn(c_uint) -> *mut c_void,
     close: unsafe extern "C" fn(*mut c_void),
     open_buffer: unsafe extern "C" fn(*mut c_void, *const c_void, usize) -> c_int,
     unpack_thumb: unsafe extern "C" fn(*mut c_void) -> c_int,
-    make_mem_thumb: unsafe extern "C" fn(*mut c_void, *mut c_int) -> *mut ProcessedImage,
+    make_mem_thumb: MakeImage,
     clear_mem: unsafe extern "C" fn(*mut ProcessedImage),
 }
 
-struct Decode<'a> {
+pub(crate) struct RawImage<'a> {
     api: &'a RawDecoder,
     context: NonNull<c_void>,
-    preview: Option<NonNull<ProcessedImage>>,
+    _source: &'a [u8],
+}
+
+struct ImageMemory<'a> {
+    api: &'a RawDecoder,
+    pixels: NonNull<ProcessedImage>,
 }
 
 impl RawDecoder {
@@ -77,38 +84,46 @@ impl RawDecoder {
         }
     }
 
-    pub(super) fn decode(&self, bytes: &[u8]) -> Option<Pixels> {
-        // SAFETY: LibRaw creates a thread-local context. The Decode guard frees
-        // it before the caller's read-only input can be released.
+    pub(super) fn open<'a>(&'a self, bytes: &'a [u8]) -> Option<RawImage<'a>> {
+        // SAFETY: The worker owns the new context and RawImage closes it once.
         let context = NonNull::new(unsafe { (self.init)(NO_DATA_ERROR_CALLBACK) })?;
-        let mut decode = Decode {
+        let image = RawImage {
             api: self,
             context,
-            preview: None,
+            _source: bytes,
         };
-        let mut error = 0;
-        // SAFETY: The context belongs to this worker. LibRaw borrows bytes until
-        // close. make_mem_thumb returns an owned buffer or null and writes error.
-        unsafe {
-            if (self.open_buffer)(context.as_ptr(), bytes.as_ptr().cast(), bytes.len()) != 0
-                || (self.unpack_thumb)(context.as_ptr()) != 0
-            {
-                return None;
-            }
-            decode.preview = NonNull::new((self.make_mem_thumb)(context.as_ptr(), &mut error));
-        }
-        if error != 0 {
-            return None;
-        }
-        decode.render()
+        // SAFETY: The context is live. RawImage borrows the source until after close.
+        let status =
+            unsafe { (self.open_buffer)(context.as_ptr(), bytes.as_ptr().cast(), bytes.len()) };
+        (status == 0).then_some(image)
     }
 }
 
-impl Decode<'_> {
-    fn render(&self) -> Option<Pixels> {
-        let preview = self.preview?;
-        // SAFETY: make_mem_thumb returned a live allocation with this C header.
-        let header = unsafe { preview.as_ref() };
+impl<'a> RawImage<'a> {
+    pub(crate) fn embedded_preview(&mut self) -> Option<DecodedImage> {
+        // SAFETY: LibRaw successfully opened the context on this worker.
+        if unsafe { (self.api.unpack_thumb)(self.context.as_ptr()) } != 0 {
+            return None;
+        }
+        self.make_image(self.api.make_mem_thumb)?.decode()
+    }
+
+    fn make_image(&self, make: MakeImage) -> Option<ImageMemory<'a>> {
+        let mut error = 0;
+        // SAFETY: The context stays live for this call. LibRaw writes the status and
+        // returns a separate allocation that must be freed with dcraw_clear_mem.
+        let pixels = NonNull::new(unsafe { make(self.context.as_ptr(), &mut error) })?;
+        (error == 0).then_some(ImageMemory {
+            api: self.api,
+            pixels,
+        })
+    }
+}
+
+impl ImageMemory<'_> {
+    fn decode(&self) -> Option<DecodedImage> {
+        // SAFETY: The pointer denotes a live LibRaw allocation with this C header.
+        let header = unsafe { self.pixels.as_ref() };
         let len = header.data_size as usize;
         if len == 0 || len > MAX_EMBEDDED_BYTES {
             return None;
@@ -116,7 +131,8 @@ impl Decode<'_> {
         // SAFETY: LibRaw allocates data_size initialized bytes after the header.
         // The slice ends before this guard calls libraw_dcraw_clear_mem.
         let data = unsafe {
-            let start = preview
+            let start = self
+                .pixels
                 .as_ptr()
                 .cast::<u8>()
                 .add(offset_of!(ProcessedImage, data));
@@ -139,25 +155,23 @@ impl Decode<'_> {
                     3 => DynamicImage::ImageRgb8(RgbImage::from_raw(width, height, data.to_vec())?),
                     _ => return None,
                 };
-                Some(make_preview(
-                    image,
-                    image::metadata::Orientation::NoTransforms,
-                ))
+                Some(DecodedImage::upright(image))
             }
             _ => None,
         }
     }
 }
 
-impl Drop for Decode<'_> {
+impl Drop for RawImage<'_> {
     fn drop(&mut self) {
-        // SAFETY: Both pointers belong to this guard and are released once,
-        // on the same worker that acquired them.
-        unsafe {
-            if let Some(preview) = self.preview {
-                (self.api.clear_mem)(preview.as_ptr());
-            }
-            (self.api.close)(self.context.as_ptr());
-        }
+        // SAFETY: The context is released once, on its owning worker, before the source is released.
+        unsafe { (self.api.close)(self.context.as_ptr()) };
+    }
+}
+
+impl Drop for ImageMemory<'_> {
+    fn drop(&mut self) {
+        // SAFETY: The separate allocation is released once on the worker that received it.
+        unsafe { (self.api.clear_mem)(self.pixels.as_ptr()) };
     }
 }

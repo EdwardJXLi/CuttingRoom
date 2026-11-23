@@ -16,7 +16,8 @@ use slint::{ComponentHandle, Image, Model, Timer, VecModel, language::StandardLi
 
 use crate::{
     GridPhoto, MainWindow, PreviewState,
-    thumbnail::{Decoder, Pixels, PreviewError},
+    image_decode::{DecodeError, Decoder},
+    thumbnail::{self, Pixels},
 };
 
 const MAX_VISIBLE_PREVIEWS: usize = 192;
@@ -110,7 +111,7 @@ impl GridSession {
             .spawn(move || {
                 let decoder = Decoder::new();
                 while let Ok(job) = requests.recv_blocking() {
-                    let result = decoder.load(&job.directory, &job.path);
+                    let result = thumbnail::load(&decoder, &job.directory, &job.path);
                     if results
                         .send_blocking((job.generation, job.index, result))
                         .is_err()
@@ -213,7 +214,7 @@ impl Grid {
         window: &MainWindow,
         generation: u64,
         index: usize,
-        thumbnail: Result<Pixels, PreviewError>,
+        thumbnail: Result<Pixels, DecodeError>,
     ) {
         if generation != self.generation
             || !(self.retained_range().contains(&index) || active_index(window) == Some(index))
@@ -226,8 +227,8 @@ impl Grid {
                     photo.preview = Image::from_rgba8(pixels);
                     PreviewState::Ready
                 }
-                Err(PreviewError::Unavailable) => PreviewState::Unavailable,
-                Err(PreviewError::DecoderUnavailable) => PreviewState::DecoderUnavailable,
+                Err(DecodeError::Unavailable) => PreviewState::Unavailable,
+                Err(DecodeError::DecoderUnavailable) => PreviewState::DecoderUnavailable,
             };
             self.cached.insert(index);
             self.photos.set_row_data(index, photo);

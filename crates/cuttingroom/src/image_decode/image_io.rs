@@ -1,5 +1,7 @@
-use std::{mem::size_of, ptr};
+use std::ptr;
 
+use super::valid_dimensions;
+use image::{DynamicImage, RgbaImage};
 use objc2_core_foundation::{
     CFBoolean, CFData, CFDictionary, CFNumber, CFRetained, CFString, CFType, CGRect, CGSize,
 };
@@ -13,11 +15,8 @@ use objc2_image_io::{
     kCGImageSourceShouldAllowFloat, kCGImageSourceShouldCacheImmediately,
     kCGImageSourceThumbnailMaxPixelSize,
 };
-use slint::{Rgba8Pixel, SharedPixelBuffer};
 
-use super::{MAX_DECODE_BYTES, MAX_IMAGE_EDGE, THUMBNAIL_EDGE};
-
-pub(super) fn decode(bytes: &[u8]) -> Result<Option<SharedPixelBuffer<Rgba8Pixel>>, ()> {
+pub(super) fn decode(bytes: &[u8], max_edge: u32) -> Result<Option<DynamicImage>, ()> {
     if bytes.is_empty() {
         return Ok(None);
     }
@@ -31,15 +30,13 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Option<SharedPixelBuffer<Rgba8Pixel
     let Some((primary, width, height)) = primary_image(&source) else {
         return Ok(None);
     };
-    if width.max(height) > MAX_IMAGE_EDGE
-        || u64::from(width) * u64::from(height) * 4 > MAX_DECODE_BYTES
-    {
+    if !valid_dimensions(width, height) {
         return Err(());
     }
 
-    thumbnail(&source, primary)
+    scaled_image(&source, primary, max_edge)
         .as_deref()
-        .map(draw_srgb)
+        .map(|image| draw_srgb(image, max_edge))
         .transpose()
 }
 
@@ -62,8 +59,12 @@ fn primary_image(source: &CGImageSource) -> Option<(usize, u32, u32)> {
     }
 }
 
-fn thumbnail(source: &CGImageSource, primary: usize) -> Option<CFRetained<CGImage>> {
-    let max_size = CFNumber::new_i32(i32::try_from(THUMBNAIL_EDGE).ok()?);
+fn scaled_image(
+    source: &CGImageSource,
+    primary: usize,
+    max_edge: u32,
+) -> Option<CFRetained<CGImage>> {
+    let max_size = CFNumber::new_i32(i32::try_from(max_edge).ok()?);
     let yes = CFBoolean::new(true);
     let no = CFBoolean::new(false);
     // SAFETY: These are framework-owned CFString keys. ImageIO expects CFNumber for the
@@ -103,23 +104,26 @@ fn dimension(properties: &CFDictionary, key: &CFString) -> Option<u32> {
     (value != 0).then_some(value)
 }
 
-fn draw_srgb(image: &CGImage) -> Result<SharedPixelBuffer<Rgba8Pixel>, ()> {
+fn draw_srgb(image: &CGImage, max_edge: u32) -> Result<DynamicImage, ()> {
     let width = u32::try_from(CGImage::width(Some(image))).map_err(|_| ())?;
     let height = u32::try_from(CGImage::height(Some(image))).map_err(|_| ())?;
-    if width == 0 || height == 0 || width.max(height) > THUMBNAIL_EDGE {
+    if !valid_dimensions(width, height) || width.max(height) > max_edge {
         return Err(());
     }
 
     // SAFETY: The immutable color space name is provided by Core Graphics.
     let color_space = CGColorSpace::with_name(Some(unsafe { kCGColorSpaceSRGB })).ok_or(())?;
-    let mut buffer = SharedPixelBuffer::<Rgba8Pixel>::new(width, height);
-    let stride = width as usize * size_of::<Rgba8Pixel>();
+    let stride = width as usize * 4;
+    let len = stride * height as usize;
+    let mut buffer = Vec::new();
+    buffer.try_reserve_exact(len).map_err(|_| ())?;
+    buffer.resize(len, 0_u8);
     {
         // SAFETY: The buffer has height rows of stride bytes with four writable bytes per
         // pixel. It stays exclusively owned by this worker and outlives the bitmap context.
         let context = unsafe {
             CGBitmapContextCreate(
-                buffer.make_mut_bytes().as_mut_ptr().cast(),
+                buffer.as_mut_ptr().cast(),
                 width as usize,
                 height as usize,
                 8,
@@ -139,15 +143,17 @@ fn draw_srgb(image: &CGImage) -> Result<SharedPixelBuffer<Rgba8Pixel>, ()> {
         );
     }
 
-    for pixel in buffer.make_mut_slice() {
-        let alpha = u16::from(pixel.a);
+    for [red, green, blue, alpha] in buffer.as_chunks_mut::<4>().0 {
+        let alpha = u16::from(*alpha);
         if alpha > 0 && alpha < 255 {
             let unpremultiply =
                 |channel| ((u16::from(channel) * 255 + alpha / 2) / alpha).min(255) as u8;
-            pixel.r = unpremultiply(pixel.r);
-            pixel.g = unpremultiply(pixel.g);
-            pixel.b = unpremultiply(pixel.b);
+            *red = unpremultiply(*red);
+            *green = unpremultiply(*green);
+            *blue = unpremultiply(*blue);
         }
     }
-    Ok(buffer)
+    RgbaImage::from_raw(width, height, buffer)
+        .map(DynamicImage::ImageRgba8)
+        .ok_or(())
 }
