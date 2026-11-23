@@ -3,12 +3,16 @@ import { Palette } from "theme.slint";
 
 export enum PreviewState { pending, ready, unavailable, decoder-unavailable }
 
+export struct MetadataEntry { label: string, value: string }
+export struct PhotoMetadata { summary: [MetadataEntry], details: [MetadataEntry] }
+
 export struct GridPhoto {
     name: string,
     relative-path: string,
     formats: [string],
     preview: image,
     state: PreviewState,
+    metadata: PhotoMetadata,
 }
 
 component PhotoTile inherits Rectangle {

@@ -1,5 +1,5 @@
 use std::{
-    io::{BufRead, BufReader, Read, Seek},
+    io::{BufRead, BufReader, Cursor, Read, Seek},
     path::Path,
 };
 
@@ -12,6 +12,8 @@ use image::{
 };
 use jxl_image_rs_integration::JxlDecoder;
 
+use crate::metadata::{self, Metadata};
+
 mod heif;
 #[cfg(target_os = "macos")]
 mod image_io;
@@ -21,6 +23,7 @@ mod raw;
 const MAX_IMAGE_EDGE: u32 = 16_384;
 const MAX_DECODE_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_SOURCE_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_EXIF_BYTES: usize = 1024 * 1024;
 
 pub(crate) enum DecodeError {
     Unavailable,
@@ -31,14 +34,18 @@ pub(crate) struct DecodedImage {
     pixels: DynamicImage,
     orientation: Orientation,
     premultiplied_alpha: bool,
+    pub(crate) source_dimensions: (u32, u32),
+    pub(crate) metadata: Metadata,
 }
 
 impl DecodedImage {
     fn upright(pixels: DynamicImage) -> Self {
         Self {
+            source_dimensions: (pixels.width(), pixels.height()),
             pixels,
             orientation: Orientation::NoTransforms,
             premultiplied_alpha: false,
+            metadata: Metadata::default(),
         }
     }
 
@@ -99,7 +106,13 @@ impl Decoder {
             Jpeg => decode_jpeg(BufReader::new(file).take(MAX_SOURCE_BYTES)),
             JpegXl => decode_jpeg_xl(file),
             Png => decode_raster(BufReader::new(file), ImageFormat::Png),
-            Tiff => decode_raster(BufReader::new(file), ImageFormat::Tiff),
+            Tiff => {
+                let bytes = read_source(file).ok_or(Unavailable)?;
+                let mut image = decode_raster(Cursor::new(&bytes), ImageFormat::Tiff)
+                    .map_err(|_| Unavailable)?;
+                image.metadata = metadata::read_exif(bytes);
+                return Ok(image);
+            }
             WebP => decode_raster(BufReader::new(file), ImageFormat::WebP),
             OpenExr => decode_raster(BufReader::new(file), ImageFormat::OpenExr),
             Avif | Heif => return self.heif(file, max_edge),
@@ -118,14 +131,17 @@ impl Decoder {
         }
         let bytes = read_source(file).ok_or(Unavailable)?;
         #[cfg(target_os = "macos")]
-        if let Some(pixels) = image_io::decode(&bytes, max_edge.unwrap_or(MAX_IMAGE_EDGE))
+        if let Some(mut image) = image_io::decode(&bytes, max_edge.unwrap_or(MAX_IMAGE_EDGE))
             .map_err(|()| Unavailable)?
         {
-            return Ok(DecodedImage::upright(pixels));
+            image.metadata = metadata::read_container(&bytes);
+            return Ok(image);
         }
         let decoder = self.heif.as_ref().ok_or(DecoderUnavailable)?;
         let pixels = decoder.decode(&bytes).ok_or(Unavailable)?;
-        Ok(DecodedImage::upright(pixels))
+        let mut image = DecodedImage::upright(pixels);
+        image.metadata = metadata::read_container(&bytes);
+        Ok(image)
     }
 
     pub(crate) fn raw<'a>(&'a self, bytes: &'a [u8]) -> Result<raw::RawImage<'a>, DecodeError> {
@@ -212,9 +228,17 @@ fn decode_image(mut decoder: impl ImageDecoder) -> image::ImageResult<DecodedIma
         ));
     }
 
+    let metadata = decoder
+        .exif_metadata()
+        .ok()
+        .flatten()
+        .filter(|bytes| bytes.len() <= MAX_EXIF_BYTES)
+        .map_or_else(Metadata::default, metadata::read_exif);
     Ok(DecodedImage {
         orientation: decoder.orientation()?,
         pixels: DynamicImage::from_decoder(decoder)?,
         premultiplied_alpha: false,
+        source_dimensions: (width, height),
+        metadata,
     })
 }

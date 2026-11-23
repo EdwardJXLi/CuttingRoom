@@ -16,12 +16,15 @@ use std::{
 use async_channel::{Sender, bounded};
 use cap_std::fs::Dir;
 use cr_project::PhotographGroup;
-use slint::{ComponentHandle, Image, Model, Timer, VecModel, language::StandardListViewItem};
+use slint::{
+    ComponentHandle, Image, Model, ModelRc, Timer, VecModel, language::StandardListViewItem,
+};
 
 use crate::{
-    GridPhoto, MainWindow, PreviewState,
+    GridPhoto, MainWindow, MetadataEntry, PhotoMetadata, PreviewState,
     image_decode::{DecodeError, Decoder},
-    thumbnail::{self, Pixels},
+    metadata::{Fields, Metadata},
+    thumbnail::{self, Preview},
 };
 
 const MAX_VISIBLE_PREVIEWS: usize = 192;
@@ -186,6 +189,7 @@ impl Grid {
             if let Some(mut photo) = self.photos.row_data(*index) {
                 photo.preview = Image::default();
                 photo.state = PreviewState::Pending;
+                photo.metadata = Default::default();
                 self.photos.set_row_data(*index, photo);
             }
             false
@@ -225,7 +229,7 @@ impl Grid {
         window: &MainWindow,
         generation: u64,
         index: usize,
-        thumbnail: Result<Pixels, DecodeError>,
+        thumbnail: Result<Preview, DecodeError>,
     ) {
         if generation != self.generation.load(Ordering::Relaxed)
             || !(self.retained_range().contains(&index) || active_index(window) == Some(index))
@@ -234,8 +238,9 @@ impl Grid {
         }
         if let Some(mut photo) = self.photos.row_data(index) {
             photo.state = match thumbnail {
-                Ok(pixels) => {
-                    photo.preview = Image::from_rgba8(pixels);
+                Ok(preview) => {
+                    photo.preview = Image::from_rgba8(preview.pixels);
+                    photo.metadata = photo_metadata(preview.metadata);
                     PreviewState::Ready
                 }
                 Err(DecodeError::Unavailable) => PreviewState::Unavailable,
@@ -250,6 +255,23 @@ impl Grid {
         self.visible.start.saturating_sub(CACHE_MARGIN)
             ..self.visible.end.saturating_add(CACHE_MARGIN)
     }
+}
+
+fn photo_metadata(metadata: Metadata) -> PhotoMetadata {
+    PhotoMetadata {
+        summary: metadata_model(metadata.summary),
+        details: metadata_model(metadata.details),
+    }
+}
+
+fn metadata_model(fields: Fields) -> ModelRc<MetadataEntry> {
+    Rc::new(VecModel::from_iter(fields.into_iter().map(
+        |(label, value)| MetadataEntry {
+            label: label.into(),
+            value: value.into(),
+        },
+    )))
+    .into()
 }
 
 fn active_index(window: &MainWindow) -> Option<usize> {

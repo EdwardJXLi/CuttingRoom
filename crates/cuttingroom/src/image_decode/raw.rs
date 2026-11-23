@@ -10,6 +10,7 @@ use image::{DynamicImage, GrayImage, RgbImage};
 use libloading::Library;
 
 use super::{DecodedImage, MAX_DECODE_BYTES, decode_jpeg, native_library, valid_dimensions};
+use crate::metadata::{Metadata, add, camera_name, clean_text};
 
 #[cfg(target_os = "linux")]
 const LIBRARIES: &[&str] = &["libraw_r.so.25", "libraw.so.25"];
@@ -38,6 +39,30 @@ struct ProcessedImage {
 
 type MakeImage = unsafe extern "C" fn(*mut c_void, *mut c_int) -> *mut ProcessedImage;
 
+// LibRaw 0.22 metadata prefixes. The supported desktop targets use a 64-bit time_t.
+#[repr(C)]
+struct Camera {
+    _guard: [u8; 4],
+    make: [u8; 64],
+    model: [u8; 64],
+}
+
+#[repr(C)]
+struct Lens {
+    _optics: [f32; 5],
+    make: [u8; 128],
+    model: [u8; 128],
+}
+
+#[repr(C)]
+struct Capture {
+    iso: f32,
+    shutter: f32,
+    aperture: f32,
+    focal_length: f32,
+    timestamp: i64,
+}
+
 pub(super) struct RawDecoder {
     _library: Library,
     init: unsafe extern "C" fn(c_uint) -> *mut c_void,
@@ -50,6 +75,9 @@ pub(super) struct RawDecoder {
     raw_height: unsafe extern "C" fn(*mut c_void) -> c_int,
     image_width: unsafe extern "C" fn(*mut c_void) -> c_int,
     image_height: unsafe extern "C" fn(*mut c_void) -> c_int,
+    camera: unsafe extern "C" fn(*mut c_void) -> *const Camera,
+    lens: unsafe extern "C" fn(*mut c_void) -> *const Lens,
+    capture: unsafe extern "C" fn(*mut c_void) -> *const Capture,
     make_mem_thumb: MakeImage,
     make_mem_image: MakeImage,
     clear_mem: unsafe extern "C" fn(*mut ProcessedImage),
@@ -90,6 +118,9 @@ impl RawDecoder {
                 raw_height: symbol(&library, b"libraw_get_raw_height")?,
                 image_width: symbol(&library, b"libraw_get_iwidth")?,
                 image_height: symbol(&library, b"libraw_get_iheight")?,
+                camera: symbol(&library, b"libraw_get_iparams")?,
+                lens: symbol(&library, b"libraw_get_lensinfo")?,
+                capture: symbol(&library, b"libraw_get_imgother")?,
                 make_mem_thumb: symbol(&library, b"libraw_dcraw_make_mem_thumb")?,
                 make_mem_image: symbol(&library, b"libraw_dcraw_make_mem_image")?,
                 clear_mem: symbol(&library, b"libraw_dcraw_clear_mem")?,
@@ -119,8 +150,21 @@ impl<'a> RawImage<'a> {
         if unsafe { (self.api.unpack_thumb)(self.context.as_ptr()) } != 0 {
             return None;
         }
-        self.make_image(self.api.make_mem_thumb)?
-            .decode(MAX_EMBEDDED_BYTES)
+        let mut image = self
+            .make_image(self.api.make_mem_thumb)?
+            .decode(MAX_EMBEDDED_BYTES)?;
+        // SAFETY: The getters read dimensions from the live RAW context.
+        let (width, height) = unsafe {
+            (
+                (self.api.image_width)(self.context.as_ptr()),
+                (self.api.image_height)(self.context.as_ptr()),
+            )
+        };
+        if width > 0 && height > 0 {
+            image.source_dimensions = (width as u32, height as u32);
+        }
+        image.metadata = self.metadata();
+        Some(image)
     }
 
     pub(crate) fn render(self, cancelled: impl Fn() -> bool) -> Option<DecodedImage> {
@@ -151,9 +195,87 @@ impl<'a> RawImage<'a> {
         if unsafe { (self.api.process)(context) } != 0 || cancelled() {
             return None;
         }
-        let image = self.make_image(self.api.make_mem_image)?;
+        let metadata = self.metadata();
+        let memory = self.make_image(self.api.make_mem_image)?;
         drop(self);
-        image.decode(MAX_DECODE_BYTES as usize)
+        let mut image = memory.decode(MAX_DECODE_BYTES as usize)?;
+        image.source_dimensions = (width as u32, height as u32);
+        image.metadata = metadata;
+        Some(image)
+    }
+
+    fn metadata(&self) -> Metadata {
+        let context = self.context.as_ptr();
+        // SAFETY: The opened context belongs to this worker. Getters return borrowed
+        // metadata prefixes that remain valid while this context is live and unchanged.
+        let (camera, lens, capture) = unsafe {
+            (
+                (self.api.camera)(context).as_ref(),
+                (self.api.lens)(context).as_ref(),
+                (self.api.capture)(context).as_ref(),
+            )
+        };
+        let mut metadata = Metadata::default();
+        let summary = &mut metadata.summary;
+        let details = &mut metadata.details;
+        if let Some(camera) = camera {
+            let make = raw_text(&camera.make);
+            let model = raw_text(&camera.model);
+            add(summary, "Camera", camera_name(&make, &model));
+            add(details, "Camera make", make);
+            add(details, "Camera model", model);
+        }
+        if let Some(lens) = lens {
+            let make = raw_text(&lens.make);
+            let model = raw_text(&lens.model);
+            add(summary, "Lens", camera_name(&make, &model));
+            add(details, "Lens make", make);
+            add(details, "Lens model", model);
+        }
+        if let Some(capture) = capture {
+            if capture.timestamp > 0
+                && let Some(date) = chrono::DateTime::from_timestamp(capture.timestamp, 0)
+            {
+                let local = date.with_timezone(&chrono::Local);
+                add(
+                    summary,
+                    "Captured",
+                    local.format("%Y-%m-%d %H:%M").to_string(),
+                );
+                add(
+                    details,
+                    "Captured",
+                    local.format("%Y-%m-%d %H:%M:%S").to_string(),
+                );
+            }
+            let mut exposure = Vec::new();
+            if positive(capture.shutter) {
+                let shutter = if capture.shutter < 0.5 {
+                    format!("1/{:.0} s", f64::from(capture.shutter).recip())
+                } else {
+                    format!("{} s", capture.shutter)
+                };
+                add(details, "Shutter speed", shutter.clone());
+                exposure.push(shutter);
+            }
+            if positive(capture.aperture) {
+                let aperture = format!("f/{:.1}", capture.aperture);
+                add(details, "Aperture", aperture.clone());
+                exposure.push(aperture);
+            }
+            add(summary, "Exposure", exposure.join(", "));
+            if positive(capture.iso) {
+                add(summary, "ISO", format!("{:.0}", capture.iso));
+            }
+            if positive(capture.focal_length) {
+                add(
+                    details,
+                    "Focal length",
+                    format!("{} mm", capture.focal_length),
+                );
+            }
+        }
+        metadata
     }
 
     fn make_image(&self, make: MakeImage) -> Option<ImageMemory<'a>> {
@@ -166,6 +288,14 @@ impl<'a> RawImage<'a> {
             pixels,
         })
     }
+}
+
+fn raw_text(bytes: &[u8]) -> String {
+    clean_text(bytes.split(|byte| *byte == 0).next().unwrap_or_default())
+}
+
+fn positive(value: f32) -> bool {
+    value.is_finite() && value > 0.0
 }
 
 impl ImageMemory<'_> {

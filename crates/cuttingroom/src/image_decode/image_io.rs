@@ -1,6 +1,6 @@
 use std::ptr;
 
-use super::valid_dimensions;
+use super::{DecodedImage, valid_dimensions};
 use image::{DynamicImage, RgbaImage};
 use objc2_core_foundation::{
     CFBoolean, CFData, CFDictionary, CFNumber, CFRetained, CFString, CFType, CGRect, CGSize,
@@ -16,7 +16,7 @@ use objc2_image_io::{
     kCGImageSourceThumbnailMaxPixelSize,
 };
 
-pub(super) fn decode(bytes: &[u8], max_edge: u32) -> Result<Option<DynamicImage>, ()> {
+pub(super) fn decode(bytes: &[u8], max_edge: u32) -> Result<Option<DecodedImage>, ()> {
     if bytes.is_empty() {
         return Ok(None);
     }
@@ -36,7 +36,11 @@ pub(super) fn decode(bytes: &[u8], max_edge: u32) -> Result<Option<DynamicImage>
 
     scaled_image(&source, primary, max_edge)
         .as_deref()
-        .map(|image| draw_srgb(image, max_edge))
+        .map(|image| {
+            let mut decoded = DecodedImage::upright(draw_srgb(image, max_edge)?);
+            decoded.source_dimensions = (width, height);
+            Ok(decoded)
+        })
         .transpose()
 }
 

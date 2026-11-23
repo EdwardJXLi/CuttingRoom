@@ -1,7 +1,7 @@
 import { StandardListView } from "std-widgets.slint";
 import { ActionButton } from "action-button.slint";
 import { Message, MessageSeverity } from "message-dialog.slint";
-import { GridPhoto, PhotoGrid } from "photo-grid.slint";
+import { GridPhoto, MetadataEntry, PhotoGrid, PhotoMetadata, PreviewState } from "photo-grid.slint";
 import { Palette } from "theme.slint";
 import { ResizeHandle } from "resize-handle.slint";
 import { Sidebar, SidebarSection } from "sidebar.slint";
@@ -30,6 +30,31 @@ component WorkspacePane inherits Rectangle {
     }
 }
 
+component MetadataRow inherits HorizontalLayout {
+    in property <MetadataEntry> entry;
+
+    min-height: 24px;
+    spacing: 12px;
+    Text {
+        width: parent.width * 0.38;
+        text: root.entry.label;
+        color: Palette.muted;
+        font-size: 12px;
+        wrap: word-wrap;
+        vertical-alignment: center;
+    }
+    Text {
+        min-width: 0px;
+        horizontal-stretch: 1;
+        text: root.entry.value;
+        color: Palette.text;
+        font-size: 12px;
+        wrap: word-wrap;
+        horizontal-alignment: right;
+        vertical-alignment: center;
+    }
+}
+
 export component PhotoWorkspace inherits VerticalLayout {
     in property <WorkspaceView> view;
     in property <bool> show-inspector;
@@ -40,8 +65,12 @@ export component PhotoWorkspace inherits VerticalLayout {
     callback grid-viewport-changed(int, int);
 
     private property <bool> browsing: root.view != WorkspaceView.photo;
-    private property <string> active-photo-name: root.active-index >= 0 && root.active-index < root.grid-photos.length
-        ? root.grid-photos[root.active-index].name : "";
+    private property <bool> has-active-photo: root.active-index >= 0 && root.active-index < root.grid-photos.length;
+    private property <string> active-photo-name: root.has-active-photo ? root.grid-photos[root.active-index].name : "";
+    private property <PhotoMetadata> active-metadata: root.has-active-photo
+        ? root.grid-photos[root.active-index].metadata : { summary: [], details: [] };
+    private property <bool> metadata-pending: root.has-active-photo
+        && root.grid-photos[root.active-index].state == PreviewState.pending;
     private property <length> handle-thickness: 7px;
     private property <length> minimum-left-width: 152px;
     private property <length> maximum-left-width: 330px;
@@ -158,6 +187,31 @@ export component PhotoWorkspace inherits VerticalLayout {
                     vertical-alignment: center;
                     overflow: elide;
                     accessible-role: text;
+                }
+            }
+
+            if root.has-active-photo: metadata-section := SidebarSection {
+                title: "Metadata";
+
+                if root.active-metadata.summary.length == 0: Text {
+                    height: 27px;
+                    text: root.metadata-pending ? "Loading metadata…" : "Metadata unavailable";
+                    color: Palette.muted;
+                    vertical-alignment: center;
+                }
+
+                for field in root.active-metadata.summary: MetadataRow {
+                    entry: field;
+                }
+
+                if root.active-metadata.details.length > 0: all := SidebarSection {
+                    title: "Show all";
+                    compact: true;
+                    expanded: false;
+
+                    for detail in metadata-section.expanded && all.expanded ? root.active-metadata.details : []: MetadataRow {
+                        entry: detail;
+                    }
                 }
             }
         }

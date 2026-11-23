@@ -1,3 +1,4 @@
+import { ScrollView } from "std-widgets.slint";
 import { Palette } from "theme.slint";
 
 component SidebarRule inherits Rectangle {
@@ -7,15 +8,17 @@ component SidebarRule inherits Rectangle {
 
 export component SidebarSection inherits VerticalLayout {
     in property <string> title;
-    private property <bool> expanded: true;
+    in property <bool> compact;
+    in-out property <bool> expanded: true;
     private property <bool> pointer-focused;
 
     vertical-stretch: 0;
     spacing: 0px;
+    padding-top: root.compact ? 6px : 0px;
 
     SidebarRule {}
     Rectangle {
-        height: 38px;
+        height: root.compact ? 24px : 38px;
         background: pointer.has-hover ? Palette.hover : transparent;
         border-width: keyboard.has-focus && !root.pointer-focused ? 1px : 0px;
         border-color: Palette.focus;
@@ -28,10 +31,11 @@ export component SidebarSection inherits VerticalLayout {
         accessible-action-expand => { root.expanded = true; }
 
         Text {
-            x: 8px;
-            width: parent.width - 16px;
+            x: root.compact ? 0px : 8px;
+            width: parent.width - self.x - 8px;
             height: parent.height;
             text: (root.expanded ? "▾  " : "▸  ") + root.title;
+            font-size: root.compact ? 12px : 1rem;
             font-weight: 600;
             color: Palette.text;
             vertical-alignment: center;
@@ -71,10 +75,10 @@ export component SidebarSection inherits VerticalLayout {
             visible: root.expanded;
             y: 0px;
             height: self.preferred-height;
-            padding-left: 16px;
-            padding-right: 16px;
+            padding-left: root.compact ? 0px : 16px;
+            padding-right: root.compact ? 0px : 16px;
             padding-top: 2px;
-            padding-bottom: 12px;
+            padding-bottom: root.compact ? 0px : 12px;
             spacing: 0px;
             @children
         }
@@ -88,10 +92,17 @@ export component Sidebar inherits Rectangle {
     accessible-role: complementary;
     accessible-label: root.label;
 
-    VerticalLayout {
-        alignment: start;
-        spacing: 0px;
-        @children
-        SidebarRule {}
+    scroll := ScrollView {
+        horizontal-scrollbar-policy: always-off;
+        content-height: sections.preferred-height;
+        content-width: self.visible-width;
+
+        sections := VerticalLayout {
+            width: scroll.visible-width;
+            height: self.preferred-height;
+            spacing: 0px;
+            @children
+            SidebarRule {}
+        }
     }
 }

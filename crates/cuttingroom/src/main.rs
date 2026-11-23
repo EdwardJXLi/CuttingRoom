@@ -5,6 +5,7 @@ use std::{env, error::Error, path::PathBuf, process::ExitCode};
 mod app;
 mod grid;
 mod image_decode;
+mod metadata;
 mod thumbnail;
 
 #[cfg(target_os = "macos")]

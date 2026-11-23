@@ -1,21 +1,27 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use cap_std::fs::Dir;
 use cr_project::{PhotographFormat, photograph_format};
 use slint::{Rgba8Pixel, SharedPixelBuffer};
 
 use crate::image_decode::{DecodeError, DecodedImage, Decoder, read_image_file};
+use crate::metadata::{Metadata, add};
 
 const THUMBNAIL_EDGE: u32 = 384;
 
-pub(crate) type Pixels = SharedPixelBuffer<Rgba8Pixel>;
+type Pixels = SharedPixelBuffer<Rgba8Pixel>;
+
+pub(crate) struct Preview {
+    pub(crate) pixels: Pixels,
+    pub(crate) metadata: Metadata,
+}
 
 pub(crate) fn load(
     decoder: &Decoder,
     directory: &Dir,
     paths: &[PathBuf],
     cancelled: impl Fn() -> bool,
-) -> Result<Pixels, DecodeError> {
+) -> Result<Preview, DecodeError> {
     use DecodeError::{DecoderUnavailable, Unavailable};
     use PhotographFormat::{Jpeg, Png, Raw, Tiff};
 
@@ -42,7 +48,7 @@ pub(crate) fn load(
         }
         match decoder
             .raster(directory, path, format, Some(THUMBNAIL_EDGE))
-            .and_then(make_preview)
+            .and_then(|image| with_metadata(image, path))
         {
             Ok(pixels) => return Ok(pixels),
             Err(DecoderUnavailable) => error = DecoderUnavailable,
@@ -61,7 +67,7 @@ fn load_raw(
     directory: &Dir,
     paths: &[&PathBuf],
     cancelled: impl Fn() -> bool,
-) -> Result<Pixels, DecodeError> {
+) -> Result<Preview, DecodeError> {
     use DecodeError::{DecoderUnavailable, Unavailable};
 
     let mut first_source = None;
@@ -79,22 +85,22 @@ fn load_raw(
             Err(Unavailable) => continue,
         };
         if let Some(image) = raw.embedded_preview() {
-            return make_preview(image);
+            return with_metadata(image, path);
         }
         drop(raw);
         if first_source.is_none() {
-            first_source = Some(bytes);
+            first_source = Some((path, bytes));
         } else {
             alternate_paths.push(path);
         }
     }
 
-    let bytes = first_source.ok_or(Unavailable)?;
+    let (path, bytes) = first_source.ok_or(Unavailable)?;
     if cancelled() {
         return Err(Unavailable);
     }
     if let Some(image) = decoder.raw(&bytes)?.render(&cancelled) {
-        return make_preview(image);
+        return with_metadata(image, path);
     }
     drop(bytes);
     for path in alternate_paths {
@@ -107,10 +113,30 @@ fn load_raw(
         if let Ok(raw) = decoder.raw(&bytes)
             && let Some(image) = raw.render(&cancelled)
         {
-            return make_preview(image);
+            return with_metadata(image, path);
         }
     }
     Err(Unavailable)
+}
+
+fn with_metadata(mut image: DecodedImage, path: &Path) -> Result<Preview, DecodeError> {
+    let mut metadata = std::mem::take(&mut image.metadata);
+    let (width, height) = image.source_dimensions;
+    let format = path
+        .extension()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_ascii_uppercase();
+    add(
+        &mut metadata.summary,
+        "Dimensions",
+        format!("{width} × {height}"),
+    );
+    add(&mut metadata.summary, "Format", format);
+    Ok(Preview {
+        pixels: make_preview(image)?,
+        metadata,
+    })
 }
 
 fn make_preview(image: DecodedImage) -> Result<Pixels, DecodeError> {
