@@ -3,6 +3,8 @@
 use std::{env, error::Error, path::PathBuf, process::ExitCode};
 
 mod app;
+mod grid;
+mod thumbnail;
 
 #[cfg(target_os = "macos")]
 mod macos {

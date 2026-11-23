@@ -1,4 +1,7 @@
-use std::{collections::BinaryHeap, path::Path};
+use std::{
+    collections::BinaryHeap,
+    path::{Path, PathBuf},
+};
 
 use diesel::{
     ExpressionMethods, QueryDsl, RunQueryDsl, connection::SimpleConnection,
@@ -23,10 +26,10 @@ diesel::table! {
 
 const BATCH_SIZE: usize = 256;
 
-/// The available photograph count and a bounded list of relative display paths.
+/// The available photograph count and a bounded list of lossless relative paths.
 pub struct PhotographList {
     pub total: i64,
-    pub paths: Vec<String>,
+    pub paths: Vec<PathBuf>,
 }
 
 impl Project {
@@ -85,13 +88,13 @@ impl Project {
             }
             total += 1;
             progress(total);
-            let display_path = path.to_string_lossy();
+            let entry = (path.to_string_lossy().into_owned(), path);
             if paths.len() < list_limit {
-                paths.push(display_path.into_owned());
+                paths.push(entry);
             } else if let Some(mut last) = paths.peek_mut()
-                && display_path.as_ref() < last.as_str()
+                && entry < *last
             {
-                *last = display_path.into_owned();
+                *last = entry;
             }
         }
         if cancelled() {
@@ -100,7 +103,11 @@ impl Project {
         upsert_photos(db, &batch)?;
         Ok(PhotographList {
             total,
-            paths: paths.into_sorted_vec(),
+            paths: paths
+                .into_sorted_vec()
+                .into_iter()
+                .map(|(_, path)| path)
+                .collect(),
         })
     }
 }

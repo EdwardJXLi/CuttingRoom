@@ -6,13 +6,18 @@ publish = false
 
 [dependencies]
 async-channel = "=2.5.0"
+cap-std = "=4.0.3"
 cr-project = { path = "../cr-project" }
+image = { version = "=0.25.10", default-features = false, features = ["jpeg", "png", "tiff"] }
 slint = { version = "=1.19.0", default-features = false, features = [
     "accessibility",
     "backend-winit",
     "compat-1-18",
     "renderer-skia",
 ] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "=0.2.191"
 
 [build-dependencies]
 slint-build = "=1.19.0"

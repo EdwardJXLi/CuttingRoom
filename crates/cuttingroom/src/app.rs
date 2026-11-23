@@ -1,5 +1,5 @@
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     error::Error,
     io,
     path::{Path, PathBuf},
@@ -10,10 +10,14 @@ use std::{
 };
 
 use async_channel::{Receiver, Sender, bounded};
+use cap_std::{ambient_authority, fs::Dir};
 use cr_project::{OpenError, OpenOutcome, PhotographList, Project};
-use slint::{ComponentHandle, Model, ModelRc, VecModel, Weak, language::StandardListViewItem};
+use slint::{ComponentHandle, Weak};
 
-use crate::{GridPhoto, MainWindow, Message, MessageSeverity};
+use crate::{
+    MainWindow, Message, MessageSeverity,
+    grid::{Grid, GridSession},
+};
 
 const FILE_LIST_LIMIT: u32 = 10_000;
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(150);
@@ -24,7 +28,7 @@ enum ProjectEvent {
     OpenCancelled,
     OpenFailed(OpenError),
     ScanProgress(i64),
-    ScanFinished(Result<PhotographList, OpenError>),
+    ScanFinished(Result<(PhotographList, Option<Dir>), OpenError>),
 }
 
 struct ProjectSession {
@@ -41,13 +45,22 @@ pub(crate) fn run(initial_folder: Option<PathBuf>) -> Result<ExitCode, Box<dyn E
     let session = initial_folder
         .map(|folder| {
             window.set_status_text("Opening folder…".into());
-            start_project(&window, folder, Rc::clone(&open_failed))
+            let grid = GridSession::start(&window)?;
+            match start_project(&window, folder, Rc::clone(&open_failed), grid.grid.clone()) {
+                Ok(project) => Ok((grid, project)),
+                Err(error) => {
+                    grid.finish()?;
+                    Err(error)
+                }
+            }
         })
         .transpose()?;
 
     let result = window.run();
-    if let Some(session) = session {
-        session.finish(&window)?;
+    if let Some((grid, project)) = session {
+        let grid_result = grid.finish();
+        project.finish(&window)?;
+        grid_result?;
     }
     result?;
     if open_failed.get() {
@@ -61,10 +74,16 @@ fn start_project(
     window: &MainWindow,
     folder: PathBuf,
     open_failed: Rc<Cell<bool>>,
+    grid: Rc<RefCell<Grid>>,
 ) -> Result<ProjectSession, Box<dyn Error>> {
     let (sender, events) = bounded(1);
     let (rescans, requests) = bounded(1);
-    let task = slint::spawn_local(handle_events(window.as_weak(), events.clone(), open_failed))?;
+    let task = slint::spawn_local(handle_events(
+        window.as_weak(),
+        events.clone(),
+        open_failed,
+        grid,
+    ))?;
     let worker = thread::Builder::new()
         .name("project worker".into())
         .spawn(move || run_project(&folder, sender, requests))?;
@@ -106,6 +125,7 @@ async fn handle_events(
     window: Weak<MainWindow>,
     events: Receiver<ProjectEvent>,
     open_failed: Rc<Cell<bool>>,
+    grid: Rc<RefCell<Grid>>,
 ) {
     while let Ok(event) = events.recv().await {
         let Some(window) = window.upgrade() else {
@@ -147,7 +167,10 @@ async fn handle_events(
             ProjectEvent::ScanFinished(result) => {
                 window.set_scan_active(false);
                 match result {
-                    Ok(photos) => show_photos(&window, photos),
+                    Ok((photos, directory)) => {
+                        window.set_status_text(listing_status(photos.total).into());
+                        grid.borrow_mut().replace(&window, directory, photos.paths);
+                    }
                     Err(error) => {
                         window.set_status_text("Folder scan failed".into());
                         show_error(&window, "Could not scan folder", &error);
@@ -163,55 +186,14 @@ fn show_scan_started(window: &MainWindow) {
     window.set_scan_active(true);
 }
 
-fn show_photos(window: &MainWindow, photographs: PhotographList) {
-    let status = match photographs.total {
+fn listing_status(total: i64) -> String {
+    match total {
         0 => "No photos found".to_owned(),
         total if total > i64::from(FILE_LIST_LIMIT) => {
             format!("Showing {FILE_LIST_LIMIT} of {total} photos")
         }
         total => photo_count(total),
-    };
-    let active_path = usize::try_from(window.get_active_index())
-        .ok()
-        .and_then(|index| window.get_grid_photos().row_data(index))
-        .map(|photo| photo.relative_path);
-    let grid: Vec<_> = photographs
-        .paths
-        .iter()
-        .map(|relative_path| {
-            let path = Path::new(relative_path);
-            let name = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or(relative_path);
-            let extension = path
-                .extension()
-                .and_then(|part| part.to_str())
-                .unwrap_or_default();
-            let format = match extension.to_ascii_uppercase().as_str() {
-                "JPG" => "JPEG".into(),
-                "TIF" => "TIFF".into(),
-                format => format.into(),
-            };
-            GridPhoto {
-                name: name.into(),
-                relative_path: relative_path.as_str().into(),
-                format,
-            }
-        })
-        .collect();
-    let active = active_path
-        .and_then(|path| grid.iter().position(|photo| photo.relative_path == path))
-        .map_or(if grid.is_empty() { -1 } else { 0 }, |index| index as i32);
-    let rows: Vec<_> = photographs
-        .paths
-        .iter()
-        .map(|path| StandardListViewItem::from(path.as_str()))
-        .collect();
-    window.set_grid_photos(ModelRc::new(VecModel::from(grid)));
-    window.set_photo_files(ModelRc::new(VecModel::from(rows)));
-    window.set_active_index(active);
-    window.set_status_text(status.into());
+    }
 }
 
 fn photo_count(count: i64) -> String {
@@ -257,6 +239,7 @@ fn run_project(folder: &Path, events: Sender<ProjectEvent>, rescans: Receiver<()
     }
 
     while !events.is_closed() {
+        let directory = Dir::open_ambient_dir(root, ambient_authority()).ok();
         let mut last_progress = Instant::now();
         let result = project.sync_photographs(
             FILE_LIST_LIMIT,
@@ -269,7 +252,9 @@ fn run_project(folder: &Path, events: Sender<ProjectEvent>, rescans: Receiver<()
             },
         );
         if events
-            .send_blocking(ProjectEvent::ScanFinished(result))
+            .send_blocking(ProjectEvent::ScanFinished(
+                result.map(|photos| (photos, directory)),
+            ))
             .is_err()
             || rescans.recv_blocking().is_err()
         {

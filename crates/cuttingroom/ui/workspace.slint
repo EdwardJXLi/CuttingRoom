@@ -36,6 +36,7 @@ export component PhotoWorkspace inherits VerticalLayout {
     in property <[GridPhoto]> grid-photos;
     in-out property <int> active-index: -1;
     callback message-requested(Message);
+    callback grid-viewport-changed(int, int);
 
     private property <bool> browsing: root.view != WorkspaceView.photo;
     private property <length> handle-thickness: 7px;
@@ -114,6 +115,7 @@ export component PhotoWorkspace inherits VerticalLayout {
             if root.view == WorkspaceView.grid: PhotoGrid {
                 photos: root.grid-photos;
                 active-index <=> root.active-index;
+                viewport-changed(first, end) => { root.grid-viewport-changed(first, end); }
             }
 
             if root.view == WorkspaceView.list && root.photo-files.length > 0: StandardListView {

@@ -54,7 +54,7 @@ fn upgrades_version_one_and_keeps_photo_identity_when_the_folder_moves() -> Test
     assert_eq!(fs::read(original.join(BACKUP))?, before);
     assert_eq!(
         project.sync_photographs(10, || false, |_| {})?.paths,
-        ["original.dng"]
+        [Path::new("original.dng")]
     );
     drop(project);
 
@@ -70,7 +70,7 @@ fn upgrades_version_one_and_keeps_photo_identity_when_the_folder_moves() -> Test
     assert_eq!(project.root(), moved.canonicalize()?);
     assert_eq!(
         project.sync_photographs(10, || false, |_| {})?.paths,
-        ["original.dng"]
+        [Path::new("original.dng")]
     );
     let db = Connection::open(moved.join(DATABASE))?;
     assert_eq!(photo_record(&db, &["original.dng"])?, (id, true));
@@ -108,11 +108,10 @@ fn rescans_photographs_and_retains_missing_records() -> TestResult {
     let listing = project.sync_photographs(1, || false, |count| found = count)?;
     assert_eq!(found, listing.total);
     assert_eq!(listing.total, 2);
-    assert_eq!(listing.paths, [nested_path.to_string_lossy()]);
+    assert_eq!(listing.paths, [nested_path.as_path()]);
     drop(project);
 
     let db = Connection::open(root.join(DATABASE))?;
-    let nested_display = nested_path.to_str().ok_or("expected a Unicode path")?;
     let nested_name = ["day 2", "é.JPG"];
     let (nested_id, nested_present) = photo_record(&db, &nested_name)?;
     let (removed_id, removed_present) = photo_record(&db, &["gone.dng"])?;
@@ -123,7 +122,10 @@ fn rescans_photographs_and_retains_missing_records() -> TestResult {
     fs::write(root.join("added.HEIC"), b"new photo")?;
     let listing = ready(root)?.sync_photographs(10, || false, |_| {})?;
     assert_eq!(listing.total, 2);
-    assert_eq!(listing.paths, ["added.HEIC", nested_display]);
+    assert_eq!(
+        listing.paths,
+        [Path::new("added.HEIC"), nested_path.as_path()]
+    );
     assert_eq!(photo_record(&db, &nested_name)?, (nested_id, true));
     assert_eq!(
         photo_record(&db, &["gone.dng"])?,
@@ -172,7 +174,10 @@ fn retains_distinct_non_unicode_names() -> TestResult {
     }
 
     let listing = ready(folder.path())?.sync_photographs(10, || false, |_| {})?;
-    assert_eq!(listing.paths, ["IMG_�.jpg", "IMG_�.jpg"]);
+    assert_eq!(
+        listing.paths,
+        [b"IMG_\xfe.jpg", b"IMG_\xff.jpg"].map(|name| Path::new(OsStr::from_bytes(name)))
+    );
     let db = Connection::open(folder.path().join(DATABASE))?;
     let mut query = db.prepare("SELECT path FROM photos ORDER BY path")?;
     let payloads = query

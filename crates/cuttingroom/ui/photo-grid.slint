@@ -1,10 +1,14 @@
 import { ListView } from "std-widgets.slint";
 import { Palette } from "theme.slint";
 
+export enum PreviewState { pending, ready, unavailable }
+
 export struct GridPhoto {
     name: string,
     relative-path: string,
     format: string,
+    preview: image,
+    state: PreviewState,
 }
 
 component PhotoTile inherits Rectangle {
@@ -28,6 +32,25 @@ component PhotoTile inherits Rectangle {
             background: Palette.canvas;
             clip: true;
             vertical-stretch: 1;
+
+            Image {
+                width: parent.width;
+                height: parent.height;
+                source: root.photo.preview;
+                image-fit: contain;
+                accessible-role: none;
+            }
+
+            if root.photo.state != PreviewState.ready: Text {
+                width: parent.width;
+                height: parent.height;
+                text: root.photo.state == PreviewState.pending ? "Loading preview…" : "Preview unavailable";
+                color: Palette.muted;
+                font-size: 12px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                overflow: elide;
+            }
 
             Rectangle {
                 x: 5px;
@@ -65,6 +88,7 @@ component PhotoTile inherits Rectangle {
 export component PhotoGrid inherits Rectangle {
     in property <[GridPhoto]> photos;
     in-out property <int> active-index: -1;
+    callback viewport-changed(int, int);
 
     private property <int> columns: max(2, floor(scroll.visible-width / 280px));
     private property <int> row-count: ceil(root.photos.length / root.columns);
@@ -72,7 +96,13 @@ export component PhotoGrid inherits Rectangle {
     private property <length> tile-width: (scroll.visible-width - 24px - (root.columns - 1) * root.gap) / root.columns;
     private property <length> tile-height: min(root.tile-width * 0.69, root.tile-width * 0.55 + 19px) + 72px;
     private property <length> row-height: root.tile-height + root.gap;
+    private property <{ first: int, end: int }> visible-photos: {
+        first: max(0, floor(-scroll.content-y / root.row-height) * root.columns),
+        end: min(root.photos.length, ceil((scroll.visible-height - scroll.content-y) / root.row-height) * root.columns),
+    };
+
     forward-focus: keyboard;
+    changed visible-photos => { root.viewport-changed(self.visible-photos.first, self.visible-photos.end); }
 
     function activate(index: int) {
         root.active-index = index;

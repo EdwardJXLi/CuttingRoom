@@ -2,12 +2,12 @@ import { AboutPopup } from "about.slint";
 import { ProgressIndicator } from "std-widgets.slint";
 import { BottomBar } from "bottom-bar.slint";
 import { Message, MessageDialog, MessageSeverity } from "message-dialog.slint";
-import { GridPhoto } from "photo-grid.slint";
+import { GridPhoto, PreviewState } from "photo-grid.slint";
 import { Palette } from "theme.slint";
 import { WorkspaceHeader, WorkspaceView } from "workspace-header.slint";
 import { PhotoWorkspace } from "workspace.slint";
 
-export { GridPhoto, Message, MessageSeverity }
+export { GridPhoto, PreviewState, Message, MessageSeverity }
 
 import "assets/fonts/NotoSans-Regular.ttf";
 import "assets/fonts/NotoSans-SemiBold.ttf";
@@ -32,9 +32,16 @@ export component MainWindow inherits Window {
     in property <bool> scan-active;
     callback rescan-folder();
     callback message-dismissed(accepted: bool);
+    callback grid-viewport-changed(int, int);
+    callback active-photo-changed();
     private property <WorkspaceView> view: WorkspaceView.grid;
     private property <bool> show-inspector: true;
     private property <Message> current-message;
+
+    changed active-index => { root.active-photo-changed(); }
+    changed view => {
+        if root.view != WorkspaceView.grid { root.grid-viewport-changed(0, 0); }
+    }
 
     public function show-message(message: Message) {
         root.current-message = message;
@@ -119,6 +126,7 @@ export component MainWindow inherits Window {
             photo-files: root.photo-files;
             grid-photos: root.grid-photos;
             active-index <=> root.active-index;
+            grid-viewport-changed(first, end) => { root.grid-viewport-changed(first, end); }
             message-requested(message) => { root.show-message(message); }
         }
         BottomBar {
