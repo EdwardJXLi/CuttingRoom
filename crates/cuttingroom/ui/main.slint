@@ -2,12 +2,13 @@ import { AboutPopup } from "about.slint";
 import { ProgressIndicator } from "std-widgets.slint";
 import { BottomBar } from "bottom-bar.slint";
 import { Message, MessageDialog, MessageSeverity } from "message-dialog.slint";
+import { FullPreview } from "photo-canvas.slint";
 import { GridPhoto, MetadataEntry, PhotoMetadata, PreviewState } from "photo-grid.slint";
 import { Palette } from "theme.slint";
 import { WorkspaceHeader, WorkspaceView } from "workspace-header.slint";
 import { PhotoWorkspace } from "workspace.slint";
 
-export { GridPhoto, MetadataEntry, PhotoMetadata, PreviewState, Message, MessageSeverity }
+export { FullPreview, GridPhoto, MetadataEntry, PhotoMetadata, PreviewState, Message, MessageSeverity }
 
 import "assets/fonts/NotoSans-Regular.ttf";
 import "assets/fonts/NotoSans-SemiBold.ttf";
@@ -26,7 +27,9 @@ export component MainWindow inherits Window {
     in property <string> project-title: "No project open";
     in property <[StandardListViewItem]> photo-files;
     in property <[GridPhoto]> grid-photos;
+    in property <FullPreview> full-preview: { index: -1 };
     in-out property <int> active-index: -1;
+    out property <bool> photo-view-active: root.view == WorkspaceView.photo;
     in property <string> status-text;
     in property <bool> project-open;
     in property <bool> scan-active;
@@ -40,7 +43,11 @@ export component MainWindow inherits Window {
 
     changed active-index => { root.active-photo-changed(); }
     changed view => {
-        if root.view != WorkspaceView.grid { root.grid-viewport-changed(0, 0); }
+        if root.view == WorkspaceView.grid {
+            root.active-photo-changed();
+        } else {
+            root.grid-viewport-changed(0, 0);
+        }
     }
 
     public function show-message(message: Message) {
@@ -125,8 +132,10 @@ export component MainWindow inherits Window {
             show-inspector: root.show-inspector;
             photo-files: root.photo-files;
             grid-photos: root.grid-photos;
+            full-preview: root.full-preview;
             active-index <=> root.active-index;
             grid-viewport-changed(first, end) => { root.grid-viewport-changed(first, end); }
+            open-photo => { root.view = WorkspaceView.photo; }
             message-requested(message) => { root.show-message(message); }
         }
         BottomBar {

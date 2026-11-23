@@ -19,6 +19,7 @@ component PhotoTile inherits Rectangle {
     in property <GridPhoto> photo;
     in property <bool> active;
     callback activated();
+    callback opened();
 
     background: root.active ? Palette.hover : Palette.panel;
     border-width: root.active ? 2px : 1px;
@@ -93,6 +94,7 @@ component PhotoTile inherits Rectangle {
 
     TouchArea {
         clicked => { root.activated(); }
+        double-clicked => { root.opened(); }
     }
 }
 
@@ -100,6 +102,7 @@ export component PhotoGrid inherits Rectangle {
     in property <[GridPhoto]> photos;
     in-out property <int> active-index: -1;
     callback viewport-changed(int, int);
+    callback open-photo();
 
     private property <int> columns: max(2, floor(scroll.visible-width / 280px));
     private property <int> row-count: ceil(root.photos.length / root.columns);
@@ -127,6 +130,10 @@ export component PhotoGrid inherits Rectangle {
                 return reject;
             }
             let key = event.text;
+            if key == Key.Return && root.active-index >= 0 {
+                root.open-photo();
+                return accept;
+            }
             let step = key == Key.LeftArrow ? -1
                 : key == Key.RightArrow ? 1
                 : key == Key.UpArrow ? -root.columns
@@ -158,6 +165,10 @@ export component PhotoGrid inherits Rectangle {
                 photo: root.photos[self.photo-index];
                 active: root.active-index == self.photo-index;
                 activated => { root.activate(self.photo-index); }
+                opened => {
+                    root.active-index = self.photo-index;
+                    root.open-photo();
+                }
             }
         }
     }

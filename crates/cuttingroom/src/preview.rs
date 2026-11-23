@@ -7,7 +7,21 @@ use slint::{Rgba8Pixel, SharedPixelBuffer};
 use crate::image_decode::{DecodeError, DecodedImage, Decoder, read_image_file};
 use crate::metadata::{Metadata, add};
 
-const THUMBNAIL_EDGE: u32 = 384;
+#[derive(Clone, Copy)]
+pub(crate) enum PreviewSize {
+    Thumbnail,
+    Photo,
+}
+
+impl PreviewSize {
+    fn max_edge(self) -> u32 {
+        match self {
+            Self::Thumbnail => 384,
+            // A square RGBA8 preview fits within the 16 MiB frame upload budget.
+            Self::Photo => 2048,
+        }
+    }
+}
 
 type Pixels = SharedPixelBuffer<Rgba8Pixel>;
 
@@ -20,6 +34,7 @@ pub(crate) fn load(
     decoder: &Decoder,
     directory: &Dir,
     paths: &[PathBuf],
+    size: PreviewSize,
     cancelled: impl Fn() -> bool,
 ) -> Result<Preview, DecodeError> {
     use DecodeError::{DecoderUnavailable, Unavailable};
@@ -47,8 +62,8 @@ pub(crate) fn load(
             return Err(Unavailable);
         }
         match decoder
-            .raster(directory, path, format, Some(THUMBNAIL_EDGE))
-            .and_then(|image| with_metadata(image, path))
+            .raster(directory, path, format, Some(size.max_edge()))
+            .and_then(|image| with_metadata(image, path, size, &cancelled))
         {
             Ok(pixels) => return Ok(pixels),
             Err(DecoderUnavailable) => error = DecoderUnavailable,
@@ -56,7 +71,7 @@ pub(crate) fn load(
         }
     }
 
-    match load_raw(decoder, directory, &raws, &cancelled) {
+    match load_raw(decoder, directory, &raws, size, &cancelled) {
         Err(Unavailable) => Err(error),
         result => result,
     }
@@ -66,6 +81,7 @@ fn load_raw(
     decoder: &Decoder,
     directory: &Dir,
     paths: &[&PathBuf],
+    size: PreviewSize,
     cancelled: impl Fn() -> bool,
 ) -> Result<Preview, DecodeError> {
     use DecodeError::{DecoderUnavailable, Unavailable};
@@ -85,7 +101,7 @@ fn load_raw(
             Err(Unavailable) => continue,
         };
         if let Some(image) = raw.embedded_preview() {
-            return with_metadata(image, path);
+            return with_metadata(image, path, size, &cancelled);
         }
         drop(raw);
         if first_source.is_none() {
@@ -100,7 +116,7 @@ fn load_raw(
         return Err(Unavailable);
     }
     if let Some(image) = decoder.raw(&bytes)?.render(&cancelled) {
-        return with_metadata(image, path);
+        return with_metadata(image, path, size, &cancelled);
     }
     drop(bytes);
     for path in alternate_paths {
@@ -113,13 +129,21 @@ fn load_raw(
         if let Ok(raw) = decoder.raw(&bytes)
             && let Some(image) = raw.render(&cancelled)
         {
-            return with_metadata(image, path);
+            return with_metadata(image, path, size, &cancelled);
         }
     }
     Err(Unavailable)
 }
 
-fn with_metadata(mut image: DecodedImage, path: &Path) -> Result<Preview, DecodeError> {
+fn with_metadata(
+    mut image: DecodedImage,
+    path: &Path,
+    size: PreviewSize,
+    cancelled: impl Fn() -> bool,
+) -> Result<Preview, DecodeError> {
+    if cancelled() {
+        return Err(DecodeError::Unavailable);
+    }
     let mut metadata = std::mem::take(&mut image.metadata);
     let (width, height) = image.source_dimensions;
     let format = path
@@ -134,14 +158,14 @@ fn with_metadata(mut image: DecodedImage, path: &Path) -> Result<Preview, Decode
     );
     add(&mut metadata.summary, "Format", format);
     Ok(Preview {
-        pixels: make_preview(image)?,
+        pixels: make_preview(image, size)?,
         metadata,
     })
 }
 
-fn make_preview(image: DecodedImage) -> Result<Pixels, DecodeError> {
+fn make_preview(image: DecodedImage, size: PreviewSize) -> Result<Pixels, DecodeError> {
     let preview = image
-        .into_display_rgba8(Some(THUMBNAIL_EDGE))
+        .into_display_rgba8(Some(size.max_edge()))
         .map_err(|_| DecodeError::Unavailable)?;
     let (width, height) = preview.dimensions();
     Ok(SharedPixelBuffer::clone_from_slice(
@@ -160,7 +184,7 @@ mod tests {
         codecs::{jpeg::JpegEncoder, openexr::OpenExrEncoder},
     };
 
-    use super::make_preview;
+    use super::{PreviewSize, make_preview};
     use crate::image_decode::{decode_jpeg, decode_raster};
 
     #[test]
@@ -181,10 +205,11 @@ mod tests {
         ])?;
         encoder.encode_image(&image)?;
 
-        let full_image = decode_jpeg(Cursor::new(&bytes))?.into_display_rgba8(None)?;
-        assert_eq!(full_image.dimensions(), (400, 800));
-        let preview =
-            make_preview(decode_jpeg(Cursor::new(bytes))?).map_err(|_| "preview failed")?;
+        let full_preview = make_preview(decode_jpeg(Cursor::new(&bytes))?, PreviewSize::Photo)
+            .map_err(|_| "preview failed")?;
+        assert_eq!((full_preview.width(), full_preview.height()), (400, 800));
+        let preview = make_preview(decode_jpeg(Cursor::new(bytes))?, PreviewSize::Thumbnail)
+            .map_err(|_| "preview failed")?;
         assert_eq!((preview.width(), preview.height()), (192, 384));
         let first = preview.as_slice().first().ok_or("empty preview")?;
         let last = preview.as_slice().last().ok_or("empty preview")?;
@@ -201,7 +226,8 @@ mod tests {
         bytes.set_position(0);
 
         let decoded = decode_raster(bytes, ImageFormat::OpenExr)?;
-        let preview = make_preview(decoded).map_err(|_| "preview failed")?;
+        let preview =
+            make_preview(decoded, PreviewSize::Thumbnail).map_err(|_| "preview failed")?;
         let pixel = preview.as_slice().first().ok_or("empty preview")?;
         assert!((117..=119).contains(&pixel.r));
         assert_eq!((pixel.g, pixel.b, pixel.a), (255, 0, 128));

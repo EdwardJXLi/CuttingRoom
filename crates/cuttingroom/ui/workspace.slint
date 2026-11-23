@@ -1,6 +1,7 @@
 import { StandardListView } from "std-widgets.slint";
 import { ActionButton } from "action-button.slint";
 import { Message, MessageSeverity } from "message-dialog.slint";
+import { FullPreview, PhotoCanvas } from "photo-canvas.slint";
 import { GridPhoto, MetadataEntry, PhotoGrid, PhotoMetadata, PreviewState } from "photo-grid.slint";
 import { Palette } from "theme.slint";
 import { ResizeHandle } from "resize-handle.slint";
@@ -60,17 +61,21 @@ export component PhotoWorkspace inherits VerticalLayout {
     in property <bool> show-inspector;
     in property <[StandardListViewItem]> photo-files;
     in property <[GridPhoto]> grid-photos;
+    in property <FullPreview> full-preview;
     in-out property <int> active-index: -1;
     callback message-requested(Message);
     callback grid-viewport-changed(int, int);
+    callback open-photo();
 
     private property <bool> browsing: root.view != WorkspaceView.photo;
     private property <bool> has-active-photo: root.active-index >= 0 && root.active-index < root.grid-photos.length;
     private property <string> active-photo-name: root.has-active-photo ? root.grid-photos[root.active-index].name : "";
-    private property <PhotoMetadata> active-metadata: root.has-active-photo
-        ? root.grid-photos[root.active-index].metadata : { summary: [], details: [] };
-    private property <bool> metadata-pending: root.has-active-photo
-        && root.grid-photos[root.active-index].state == PreviewState.pending;
+    private property <bool> preview-complete: !root.browsing && root.full-preview.index == root.active-index
+        && root.full-preview.state != PreviewState.pending;
+    private property <PhotoMetadata> active-metadata: root.preview-complete ? root.full-preview.metadata
+        : root.has-active-photo ? root.grid-photos[root.active-index].metadata : { summary: [], details: [] };
+    private property <bool> metadata-pending: root.has-active-photo && !root.preview-complete
+        && (!root.browsing || root.grid-photos[root.active-index].state == PreviewState.pending);
     private property <length> handle-thickness: 7px;
     private property <length> minimum-left-width: 152px;
     private property <length> maximum-left-width: 330px;
@@ -149,6 +154,7 @@ export component PhotoWorkspace inherits VerticalLayout {
                 photos: root.grid-photos;
                 active-index <=> root.active-index;
                 viewport-changed(first, end) => { root.grid-viewport-changed(first, end); }
+                open-photo => { root.open-photo(); }
             }
 
             if root.view == WorkspaceView.list && root.photo-files.length > 0: StandardListView {
@@ -157,6 +163,12 @@ export component PhotoWorkspace inherits VerticalLayout {
                 accessible-label: "Photo files";
                 model: root.photo-files;
                 current-item <=> root.active-index;
+            }
+
+            if root.view == WorkspaceView.photo: PhotoCanvas {
+                photos: root.grid-photos;
+                preview: root.full-preview;
+                active-index <=> root.active-index;
             }
         }
 

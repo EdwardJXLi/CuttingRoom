@@ -21,10 +21,10 @@ use slint::{
 };
 
 use crate::{
-    GridPhoto, MainWindow, MetadataEntry, PhotoMetadata, PreviewState,
+    FullPreview, GridPhoto, MainWindow, MetadataEntry, PhotoMetadata, PreviewState,
     image_decode::{DecodeError, Decoder},
     metadata::{Fields, Metadata},
-    thumbnail::{self, Preview},
+    preview::{self, Preview, PreviewSize},
 };
 
 const MAX_VISIBLE_PREVIEWS: usize = 192;
@@ -53,6 +53,7 @@ struct Job {
     paths: Vec<PathBuf>,
     index: usize,
     generation: u64,
+    size: PreviewSize,
 }
 
 impl GridSession {
@@ -96,11 +97,11 @@ impl GridSession {
         let state = grid.clone();
         let weak = window.as_weak();
         let task = slint::spawn_local(async move {
-            while let Ok((generation, index, thumbnail)) = completed.recv().await {
+            while let Ok((generation, index, size, preview)) = completed.recv().await {
                 let Some(window) = weak.upgrade() else { break };
                 state
                     .borrow_mut()
-                    .apply(&window, generation, index, thumbnail);
+                    .apply(&window, generation, index, size, preview);
 
                 let state = state.clone();
                 let weak = weak.clone();
@@ -115,15 +116,17 @@ impl GridSession {
         })?;
 
         let worker = thread::Builder::new()
-            .name("thumbnail worker".into())
+            .name("preview worker".into())
             .spawn(move || {
                 let decoder = Decoder::new();
                 while let Ok(job) = requests.recv_blocking() {
-                    let result = thumbnail::load(&decoder, &job.directory, &job.paths, || {
-                        requests.is_closed() || generation.load(Ordering::Relaxed) != job.generation
-                    });
+                    let result =
+                        preview::load(&decoder, &job.directory, &job.paths, job.size, || {
+                            requests.is_closed()
+                                || generation.load(Ordering::Relaxed) != job.generation
+                        });
                     if results
-                        .send_blocking((job.generation, job.index, result))
+                        .send_blocking((job.generation, job.index, job.size, result))
                         .is_err()
                     {
                         break;
@@ -138,7 +141,7 @@ impl GridSession {
         self.task.abort();
         self.worker
             .join()
-            .map_err(|_| io::Error::other("thumbnail worker failed"))
+            .map_err(|_| io::Error::other("preview worker failed"))
     }
 }
 
@@ -176,10 +179,17 @@ impl Grid {
                 index as i32
             }),
         );
+        self.reset_preview(window, self.preview_target(window));
         self.request_next(window);
     }
 
     fn refresh(&mut self, window: &MainWindow) {
+        let target = self.preview_target(window);
+        if target != window.get_full_preview().index {
+            self.generation.fetch_add(1, Ordering::Relaxed);
+            self.reset_preview(window, target);
+        }
+
         let retained = self.retained_range();
         let active = active_index(window);
         self.cached.retain(|index| {
@@ -197,6 +207,28 @@ impl Grid {
         self.request_next(window);
     }
 
+    fn preview_target(&self, window: &MainWindow) -> i32 {
+        if window.get_photo_view_active()
+            && active_index(window).is_some_and(|index| index < self.groups.len())
+        {
+            window.get_active_index()
+        } else {
+            -1
+        }
+    }
+
+    fn reset_preview(&self, window: &MainWindow, index: i32) {
+        window.set_full_preview(FullPreview {
+            index,
+            state: if self.directory.is_some() {
+                PreviewState::Pending
+            } else {
+                PreviewState::Unavailable
+            },
+            ..FullPreview::default()
+        });
+    }
+
     fn request_next(&mut self, window: &MainWindow) {
         if self.busy {
             return;
@@ -204,11 +236,20 @@ impl Grid {
         let Some(directory) = &self.directory else {
             return;
         };
-        let next = |index: &usize| !self.cached.contains(index) && *index < self.groups.len();
-        let index = active_index(window)
-            .filter(|index| self.visible.contains(index) && next(index))
-            .or_else(|| self.visible.clone().find(next))
-            .or_else(|| active_index(window).filter(next));
+        let (index, size) = if window.get_photo_view_active() {
+            let preview = window.get_full_preview();
+            if preview.state != PreviewState::Pending {
+                return;
+            }
+            (preview.index.try_into().ok(), PreviewSize::Photo)
+        } else {
+            let next = |index: &usize| !self.cached.contains(index) && *index < self.groups.len();
+            let index = active_index(window)
+                .filter(|index| self.visible.contains(index) && next(index))
+                .or_else(|| self.visible.clone().find(next))
+                .or_else(|| active_index(window).filter(next));
+            (index, PreviewSize::Thumbnail)
+        };
         if let Some(index) = index
             && let Some(group) = self.groups.get(index)
         {
@@ -219,6 +260,7 @@ impl Grid {
                     paths: group.files.clone(),
                     index,
                     generation: self.generation.load(Ordering::Relaxed),
+                    size,
                 })
                 .is_ok();
         }
@@ -229,22 +271,41 @@ impl Grid {
         window: &MainWindow,
         generation: u64,
         index: usize,
-        thumbnail: Result<Preview, DecodeError>,
+        size: PreviewSize,
+        result: Result<Preview, DecodeError>,
     ) {
-        if generation != self.generation.load(Ordering::Relaxed)
-            || !(self.retained_range().contains(&index) || active_index(window) == Some(index))
-        {
+        if generation != self.generation.load(Ordering::Relaxed) {
+            return;
+        }
+        if let PreviewSize::Photo = size {
+            if window.get_photo_view_active() && active_index(window) == Some(index) {
+                let mut full_preview = FullPreview {
+                    index: index as i32,
+                    ..FullPreview::default()
+                };
+                full_preview.state = match result {
+                    Ok(preview) => {
+                        full_preview.image = Image::from_rgba8(preview.pixels);
+                        full_preview.metadata = photo_metadata(preview.metadata);
+                        PreviewState::Ready
+                    }
+                    Err(error) => preview_error_state(error),
+                };
+                window.set_full_preview(full_preview);
+            }
+            return;
+        }
+        if !(self.retained_range().contains(&index) || active_index(window) == Some(index)) {
             return;
         }
         if let Some(mut photo) = self.photos.row_data(index) {
-            photo.state = match thumbnail {
+            photo.state = match result {
                 Ok(preview) => {
                     photo.preview = Image::from_rgba8(preview.pixels);
                     photo.metadata = photo_metadata(preview.metadata);
                     PreviewState::Ready
                 }
-                Err(DecodeError::Unavailable) => PreviewState::Unavailable,
-                Err(DecodeError::DecoderUnavailable) => PreviewState::DecoderUnavailable,
+                Err(error) => preview_error_state(error),
             };
             self.cached.insert(index);
             self.photos.set_row_data(index, photo);
@@ -272,6 +333,13 @@ fn metadata_model(fields: Fields) -> ModelRc<MetadataEntry> {
         },
     )))
     .into()
+}
+
+fn preview_error_state(error: DecodeError) -> PreviewState {
+    match error {
+        DecodeError::Unavailable => PreviewState::Unavailable,
+        DecodeError::DecoderUnavailable => PreviewState::DecoderUnavailable,
+    }
 }
 
 fn active_index(window: &MainWindow) -> Option<usize> {
