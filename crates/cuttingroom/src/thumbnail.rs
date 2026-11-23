@@ -9,6 +9,7 @@ use image::{
     DynamicImage, ImageDecoder, ImageFormat, ImageReader, Limits, codecs::jpeg::JpegDecoder,
     metadata::Orientation,
 };
+use jxl_image_rs_integration::JxlDecoder;
 use slint::{Rgba8Pixel, SharedPixelBuffer};
 
 mod heif;
@@ -43,7 +44,7 @@ impl Decoder {
     }
 
     pub(crate) fn load(&self, directory: &Dir, path: &Path) -> Result<Pixels, PreviewError> {
-        use PhotographFormat::{Heif, Jpeg, Png, Raw, Tiff};
+        use PhotographFormat::{Heif, Jpeg, JpegXl, Png, Raw, Tiff};
         use PreviewError::{DecoderUnavailable, Unavailable};
 
         let format = photograph_format(path).ok_or(Unavailable)?;
@@ -52,6 +53,7 @@ impl Decoder {
             Jpeg => {
                 decode_jpeg(BufReader::new(file).take(MAX_SOURCE_BYTES)).map_err(|_| Unavailable)
             }
+            JpegXl => decode_jpeg_xl(file).map_err(|_| Unavailable),
             Png => decode_raster(file, ImageFormat::Png).map_err(|_| Unavailable),
             Tiff => decode_raster(file, ImageFormat::Tiff).map_err(|_| Unavailable),
             Raw => {
@@ -109,6 +111,12 @@ fn limits() -> Limits {
 
 fn decode_jpeg(reader: impl BufRead + Seek) -> image::ImageResult<Pixels> {
     let mut decoder = JpegDecoder::new(reader)?;
+    decoder.set_limits(limits())?;
+    render(decoder)
+}
+
+fn decode_jpeg_xl(file: cap_std::fs::File) -> image::ImageResult<Pixels> {
+    let mut decoder = JxlDecoder::new(file.take(MAX_SOURCE_BYTES))?;
     decoder.set_limits(limits())?;
     render(decoder)
 }

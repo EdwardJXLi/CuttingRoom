@@ -11,6 +11,7 @@ use walkdir::{DirEntry, IntoIter, WalkDir};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PhotographFormat {
     Jpeg,
+    JpegXl,
     Png,
     Tiff,
     Heif,
@@ -19,10 +20,11 @@ pub enum PhotographFormat {
 
 /// Identify the decoder family from a photograph's filename extension.
 pub fn photograph_format(path: &Path) -> Option<PhotographFormat> {
-    use PhotographFormat::{Heif, Jpeg, Png, Raw, Tiff};
+    use PhotographFormat::{Heif, Jpeg, JpegXl, Png, Raw, Tiff};
 
     match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
         "jpeg" | "jpg" => Some(Jpeg),
+        "jxl" => Some(JpegXl),
         "png" => Some(Png),
         "tif" | "tiff" => Some(Tiff),
         "heic" | "heif" => Some(Heif),
