@@ -19,7 +19,7 @@ use crate::{
     grid::{Grid, GridSession},
 };
 
-const FILE_LIST_LIMIT: u32 = 10_000;
+const PHOTO_LIST_LIMIT: u32 = 10_000;
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(150);
 
 enum ProjectEvent {
@@ -160,16 +160,15 @@ async fn handle_events(
                 show_error(&window, "Could not open project", &error);
             }
             ProjectEvent::ScanProgress(found) => {
-                window.set_status_text(
-                    format!("Scanning folder… {} found", photo_count(found)).into(),
-                );
+                let unit = if found == 1 { "file" } else { "files" };
+                window.set_status_text(format!("Scanning folder… {found} {unit} found").into());
             }
             ProjectEvent::ScanFinished(result) => {
                 window.set_scan_active(false);
                 match result {
                     Ok((photos, directory)) => {
-                        window.set_status_text(listing_status(photos.total).into());
-                        grid.borrow_mut().replace(&window, directory, photos.paths);
+                        window.set_status_text(listing_status(&photos).into());
+                        grid.borrow_mut().replace(&window, directory, photos.groups);
                     }
                     Err(error) => {
                         window.set_status_text("Folder scan failed".into());
@@ -186,21 +185,12 @@ fn show_scan_started(window: &MainWindow) {
     window.set_scan_active(true);
 }
 
-fn listing_status(total: i64) -> String {
-    match total {
+fn listing_status(listing: &PhotographList) -> String {
+    match listing.groups.len() {
         0 => "No photos found".to_owned(),
-        total if total > i64::from(FILE_LIST_LIMIT) => {
-            format!("Showing {FILE_LIST_LIMIT} of {total} photos")
-        }
-        total => photo_count(total),
-    }
-}
-
-fn photo_count(count: i64) -> String {
-    if count == 1 {
-        "1 photo".to_owned()
-    } else {
-        format!("{count} photos")
+        count if listing.has_more => format!("Showing first {count} photos"),
+        1 => "1 photo".to_owned(),
+        count => format!("{count} photos"),
     }
 }
 
@@ -242,7 +232,7 @@ fn run_project(folder: &Path, events: Sender<ProjectEvent>, rescans: Receiver<()
         let directory = Dir::open_ambient_dir(root, ambient_authority()).ok();
         let mut last_progress = Instant::now();
         let result = project.sync_photographs(
-            FILE_LIST_LIMIT,
+            PHOTO_LIST_LIMIT,
             || events.is_closed(),
             |found| {
                 if last_progress.elapsed() >= PROGRESS_INTERVAL {

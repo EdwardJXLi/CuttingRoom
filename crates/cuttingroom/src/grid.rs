@@ -5,13 +5,17 @@ use std::{
     ops::Range,
     path::{Path, PathBuf},
     rc::Rc,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     thread,
     time::Duration,
 };
 
 use async_channel::{Sender, bounded};
 use cap_std::fs::Dir;
+use cr_project::PhotographGroup;
 use slint::{ComponentHandle, Image, Model, Timer, VecModel, language::StandardListViewItem};
 
 use crate::{
@@ -32,18 +36,18 @@ pub(crate) struct GridSession {
 
 pub(crate) struct Grid {
     directory: Option<Arc<Dir>>,
-    paths: Vec<PathBuf>,
+    groups: Vec<PhotographGroup>,
     photos: Rc<VecModel<GridPhoto>>,
     visible: Range<usize>,
     cached: BTreeSet<usize>,
-    generation: u64,
+    generation: Arc<AtomicU64>,
     busy: bool,
     jobs: Sender<Job>,
 }
 
 struct Job {
     directory: Arc<Dir>,
-    path: PathBuf,
+    paths: Vec<PathBuf>,
     index: usize,
     generation: u64,
 }
@@ -54,13 +58,14 @@ impl GridSession {
         let (results, completed) = bounded(1);
         let photos = Rc::new(VecModel::default());
         window.set_grid_photos(photos.clone().into());
+        let generation = Arc::new(AtomicU64::new(0));
         let grid = Rc::new(RefCell::new(Grid {
             directory: None,
-            paths: Vec::new(),
+            groups: Vec::new(),
             photos,
             visible: 0..0,
             cached: BTreeSet::new(),
-            generation: 0,
+            generation: generation.clone(),
             busy: false,
             jobs,
         }));
@@ -111,7 +116,9 @@ impl GridSession {
             .spawn(move || {
                 let decoder = Decoder::new();
                 while let Ok(job) = requests.recv_blocking() {
-                    let result = thumbnail::load(&decoder, &job.directory, &job.path);
+                    let result = thumbnail::load(&decoder, &job.directory, &job.paths, || {
+                        requests.is_closed() || generation.load(Ordering::Relaxed) != job.generation
+                    });
                     if results
                         .send_blocking((job.generation, job.index, result))
                         .is_err()
@@ -137,28 +144,32 @@ impl Grid {
         &mut self,
         window: &MainWindow,
         directory: Option<Dir>,
-        paths: Vec<PathBuf>,
+        groups: Vec<PhotographGroup>,
     ) {
         let active = active_index(window)
-            .and_then(|index| self.paths.get(index))
-            .and_then(|path| paths.iter().position(|candidate| candidate == path));
+            .and_then(|index| self.groups.get(index))
+            .and_then(|group| {
+                groups
+                    .iter()
+                    .position(|candidate| candidate.stem == group.stem)
+            });
 
-        let file_rows: Vec<_> = paths
+        let photo_rows: Vec<_> = groups
             .iter()
-            .map(|path| StandardListViewItem::from(path.to_string_lossy().as_ref()))
+            .map(|group| grid_photo(group, directory.is_some()))
             .collect();
-        let photo_rows: Vec<_> = paths
+        let file_rows: Vec<_> = photo_rows
             .iter()
-            .map(|path| grid_photo(path, directory.is_some()))
+            .map(|photo| StandardListViewItem::from(photo.relative_path.as_str()))
             .collect();
         self.directory = directory.map(Arc::new);
-        self.paths = paths;
-        self.generation += 1;
+        self.groups = groups;
+        self.generation.fetch_add(1, Ordering::Relaxed);
         self.cached.clear();
         self.photos.set_vec(photo_rows);
         window.set_photo_files(Rc::new(VecModel::from(file_rows)).into());
         window.set_active_index(
-            active.map_or(if self.paths.is_empty() { -1 } else { 0 }, |index| {
+            active.map_or(if self.groups.is_empty() { -1 } else { 0 }, |index| {
                 index as i32
             }),
         );
@@ -189,21 +200,21 @@ impl Grid {
         let Some(directory) = &self.directory else {
             return;
         };
-        let next = |index: &usize| !self.cached.contains(index) && *index < self.paths.len();
+        let next = |index: &usize| !self.cached.contains(index) && *index < self.groups.len();
         let index = active_index(window)
             .filter(|index| self.visible.contains(index) && next(index))
             .or_else(|| self.visible.clone().find(next))
             .or_else(|| active_index(window).filter(next));
         if let Some(index) = index
-            && let Some(path) = self.paths.get(index)
+            && let Some(group) = self.groups.get(index)
         {
             self.busy = self
                 .jobs
                 .try_send(Job {
                     directory: directory.clone(),
-                    path: path.clone(),
+                    paths: group.files.clone(),
                     index,
-                    generation: self.generation,
+                    generation: self.generation.load(Ordering::Relaxed),
                 })
                 .is_ok();
         }
@@ -216,7 +227,7 @@ impl Grid {
         index: usize,
         thumbnail: Result<Pixels, DecodeError>,
     ) {
-        if generation != self.generation
+        if generation != self.generation.load(Ordering::Relaxed)
             || !(self.retained_range().contains(&index) || active_index(window) == Some(index))
         {
             return;
@@ -245,25 +256,20 @@ fn active_index(window: &MainWindow) -> Option<usize> {
     window.get_active_index().try_into().ok()
 }
 
-fn grid_photo(path: &Path, directory_open: bool) -> GridPhoto {
+fn grid_photo(group: &PhotographGroup, directory_open: bool) -> GridPhoto {
+    let path = match group.files.as_slice() {
+        [path] => path,
+        _ => &group.stem,
+    };
     let name = path
         .file_name()
         .unwrap_or(path.as_os_str())
         .to_string_lossy();
-    let extension = path
-        .extension()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .to_ascii_uppercase();
-    let format = match extension.as_str() {
-        "JPG" => "JPEG",
-        "TIF" => "TIFF",
-        format => format,
-    };
+    let formats: BTreeSet<_> = group.files.iter().map(|path| format_label(path)).collect();
     GridPhoto {
         name: name.as_ref().into(),
         relative_path: path.to_string_lossy().as_ref().into(),
-        format: format.into(),
+        formats: Rc::new(VecModel::from_iter(formats)).into(),
         state: if directory_open {
             PreviewState::Pending
         } else {
@@ -271,4 +277,18 @@ fn grid_photo(path: &Path, directory_open: bool) -> GridPhoto {
         },
         ..GridPhoto::default()
     }
+}
+
+fn format_label(path: &Path) -> slint::SharedString {
+    let extension = path
+        .extension()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_ascii_uppercase();
+    match extension.as_str() {
+        "JPG" => "JPEG",
+        "TIF" => "TIFF",
+        format => format,
+    }
+    .into()
 }

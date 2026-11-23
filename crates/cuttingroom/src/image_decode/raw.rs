@@ -9,7 +9,7 @@ use std::{
 use image::{DynamicImage, GrayImage, RgbImage};
 use libloading::Library;
 
-use super::{DecodedImage, decode_jpeg, native_library, valid_dimensions};
+use super::{DecodedImage, MAX_DECODE_BYTES, decode_jpeg, native_library, valid_dimensions};
 
 #[cfg(target_os = "linux")]
 const LIBRARIES: &[&str] = &["libraw_r.so.25", "libraw.so.25"];
@@ -44,7 +44,14 @@ pub(super) struct RawDecoder {
     close: unsafe extern "C" fn(*mut c_void),
     open_buffer: unsafe extern "C" fn(*mut c_void, *const c_void, usize) -> c_int,
     unpack_thumb: unsafe extern "C" fn(*mut c_void) -> c_int,
+    unpack: unsafe extern "C" fn(*mut c_void) -> c_int,
+    process: unsafe extern "C" fn(*mut c_void) -> c_int,
+    raw_width: unsafe extern "C" fn(*mut c_void) -> c_int,
+    raw_height: unsafe extern "C" fn(*mut c_void) -> c_int,
+    image_width: unsafe extern "C" fn(*mut c_void) -> c_int,
+    image_height: unsafe extern "C" fn(*mut c_void) -> c_int,
     make_mem_thumb: MakeImage,
+    make_mem_image: MakeImage,
     clear_mem: unsafe extern "C" fn(*mut ProcessedImage),
 }
 
@@ -77,7 +84,14 @@ impl RawDecoder {
                 close: symbol(&library, b"libraw_close")?,
                 open_buffer: symbol(&library, b"libraw_open_buffer")?,
                 unpack_thumb: symbol(&library, b"libraw_unpack_thumb")?,
+                unpack: symbol(&library, b"libraw_unpack")?,
+                process: symbol(&library, b"libraw_dcraw_process")?,
+                raw_width: symbol(&library, b"libraw_get_raw_width")?,
+                raw_height: symbol(&library, b"libraw_get_raw_height")?,
+                image_width: symbol(&library, b"libraw_get_iwidth")?,
+                image_height: symbol(&library, b"libraw_get_iheight")?,
                 make_mem_thumb: symbol(&library, b"libraw_dcraw_make_mem_thumb")?,
+                make_mem_image: symbol(&library, b"libraw_dcraw_make_mem_image")?,
                 clear_mem: symbol(&library, b"libraw_dcraw_clear_mem")?,
                 _library: library,
             })
@@ -105,7 +119,41 @@ impl<'a> RawImage<'a> {
         if unsafe { (self.api.unpack_thumb)(self.context.as_ptr()) } != 0 {
             return None;
         }
-        self.make_image(self.api.make_mem_thumb)?.decode()
+        self.make_image(self.api.make_mem_thumb)?
+            .decode(MAX_EMBEDDED_BYTES)
+    }
+
+    pub(crate) fn render(self, cancelled: impl Fn() -> bool) -> Option<DecodedImage> {
+        let context = self.context.as_ptr();
+        // SAFETY: These getters read the sizes of a live, opened RAW context.
+        let (raw_width, raw_height, width, height) = unsafe {
+            (
+                (self.api.raw_width)(context),
+                (self.api.raw_height)(context),
+                (self.api.image_width)(context),
+                (self.api.image_height)(context),
+            )
+        };
+        if cancelled()
+            || !valid_dimensions(
+                u32::try_from(raw_width).ok()?,
+                u32::try_from(raw_height).ok()?,
+            )
+            || !valid_dimensions(u32::try_from(width).ok()?, u32::try_from(height).ok()?)
+        {
+            return None;
+        }
+        // SAFETY: The opened context is exclusive to this worker. Unpack must succeed before processing.
+        if unsafe { (self.api.unpack)(context) } != 0 || cancelled() {
+            return None;
+        }
+        // SAFETY: LibRaw processes the unpacked pixels within the live context.
+        if unsafe { (self.api.process)(context) } != 0 || cancelled() {
+            return None;
+        }
+        let image = self.make_image(self.api.make_mem_image)?;
+        drop(self);
+        image.decode(MAX_DECODE_BYTES as usize)
     }
 
     fn make_image(&self, make: MakeImage) -> Option<ImageMemory<'a>> {
@@ -121,11 +169,11 @@ impl<'a> RawImage<'a> {
 }
 
 impl ImageMemory<'_> {
-    fn decode(&self) -> Option<DecodedImage> {
+    fn decode(&self, max_bytes: usize) -> Option<DecodedImage> {
         // SAFETY: The pointer denotes a live LibRaw allocation with this C header.
         let header = unsafe { self.pixels.as_ref() };
         let len = header.data_size as usize;
-        if len == 0 || len > MAX_EMBEDDED_BYTES {
+        if len == 0 || len > max_bytes {
             return None;
         }
         // SAFETY: LibRaw allocates data_size initialized bytes after the header.

@@ -1,5 +1,5 @@
 use std::{
-    collections::BinaryHeap,
+    collections::BTreeMap,
     path::{Path, PathBuf},
 };
 
@@ -26,17 +26,24 @@ diesel::table! {
 
 const BATCH_SIZE: usize = 256;
 
-/// The available photograph count and a bounded list of lossless relative paths.
+/// The number of present source files and a bounded list of complete groups.
 pub struct PhotographList {
     pub total: i64,
-    pub paths: Vec<PathBuf>,
+    pub groups: Vec<PhotographGroup>,
+    pub has_more: bool,
+}
+
+/// Sources in one directory with the same exact filename stem.
+pub struct PhotographGroup {
+    pub stem: PathBuf,
+    pub files: Vec<PathBuf>,
 }
 
 impl Project {
     /// Reconcile the inventory against a fresh folder scan on a blocking worker.
     ///
-    /// Report the number of photos observed so far through `progress`.
-    /// Return up to `list_limit` available paths after commit. Cancelled and failed
+    /// Report the number of source files observed so far through `progress`.
+    /// Return up to `list_limit` complete groups after commit. Cancelled and failed
     /// scans preserve the previous inventory.
     pub fn sync_photographs(
         &self,
@@ -74,8 +81,9 @@ impl Project {
         mut progress: impl FnMut(i64),
     ) -> Result<PhotographList, OpenError> {
         let mut batch = Vec::with_capacity(BATCH_SIZE);
-        let mut paths = BinaryHeap::new();
+        let mut groups: BTreeMap<_, Vec<PathBuf>> = BTreeMap::new();
         let mut total = 0;
+        let mut has_more = false;
         for path in photographs(self.root(), &cancelled) {
             let path = path.map_err(OpenError::Scan)?;
             batch.push(ScannedPhoto {
@@ -88,13 +96,16 @@ impl Project {
             }
             total += 1;
             progress(total);
-            let entry = (path.to_string_lossy().into_owned(), path);
-            if paths.len() < list_limit {
-                paths.push(entry);
-            } else if let Some(mut last) = paths.peek_mut()
-                && entry < *last
-            {
-                *last = entry;
+            if list_limit > 0 {
+                let stem = path.with_extension("");
+                let key = (stem.to_string_lossy().into_owned(), stem);
+                groups.entry(key).or_default().push(path);
+                if groups.len() > list_limit {
+                    groups.pop_last();
+                    has_more = true;
+                }
+            } else {
+                has_more = true;
             }
         }
         if cancelled() {
@@ -103,11 +114,14 @@ impl Project {
         upsert_photos(db, &batch)?;
         Ok(PhotographList {
             total,
-            paths: paths
-                .into_sorted_vec()
+            groups: groups
                 .into_iter()
-                .map(|(_, path)| path)
+                .map(|((_, stem), mut files)| {
+                    files.sort_unstable();
+                    PhotographGroup { stem, files }
+                })
                 .collect(),
+            has_more,
         })
     }
 }

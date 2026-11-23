@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::PathBuf;
 
 use cap_std::fs::Dir;
 use cr_project::{PhotographFormat, photograph_format};
@@ -10,18 +10,107 @@ const THUMBNAIL_EDGE: u32 = 384;
 
 pub(crate) type Pixels = SharedPixelBuffer<Rgba8Pixel>;
 
-pub(crate) fn load(decoder: &Decoder, directory: &Dir, path: &Path) -> Result<Pixels, DecodeError> {
-    let format = photograph_format(path).ok_or(DecodeError::Unavailable)?;
-    let image = if format == PhotographFormat::Raw {
-        let bytes = read_image_file(directory, path).ok_or(DecodeError::Unavailable)?;
-        decoder
-            .raw(&bytes)?
-            .embedded_preview()
-            .ok_or(DecodeError::Unavailable)?
-    } else {
-        decoder.raster(directory, path, format, Some(THUMBNAIL_EDGE))?
-    };
-    make_preview(image)
+pub(crate) fn load(
+    decoder: &Decoder,
+    directory: &Dir,
+    paths: &[PathBuf],
+    cancelled: impl Fn() -> bool,
+) -> Result<Pixels, DecodeError> {
+    use DecodeError::{DecoderUnavailable, Unavailable};
+    use PhotographFormat::{Jpeg, Png, Raw, Tiff};
+
+    let mut rasters = Vec::new();
+    let mut raws = Vec::new();
+    for path in paths {
+        match photograph_format(path) {
+            Some(Raw) => raws.push(path),
+            Some(format) => rasters.push((format, path)),
+            None => (),
+        }
+    }
+    rasters.sort_by_key(|(format, _)| match format {
+        Jpeg => 0,
+        Png => 1,
+        Tiff => 2,
+        _ => 3,
+    });
+
+    let mut error = Unavailable;
+    for (format, path) in rasters {
+        if cancelled() {
+            return Err(Unavailable);
+        }
+        match decoder
+            .raster(directory, path, format, Some(THUMBNAIL_EDGE))
+            .and_then(make_preview)
+        {
+            Ok(pixels) => return Ok(pixels),
+            Err(DecoderUnavailable) => error = DecoderUnavailable,
+            Err(Unavailable) => (),
+        }
+    }
+
+    match load_raw(decoder, directory, &raws, &cancelled) {
+        Err(Unavailable) => Err(error),
+        result => result,
+    }
+}
+
+fn load_raw(
+    decoder: &Decoder,
+    directory: &Dir,
+    paths: &[&PathBuf],
+    cancelled: impl Fn() -> bool,
+) -> Result<Pixels, DecodeError> {
+    use DecodeError::{DecoderUnavailable, Unavailable};
+
+    let mut first_source = None;
+    let mut alternate_paths = Vec::new();
+    for &path in paths {
+        if cancelled() {
+            return Err(Unavailable);
+        }
+        let Some(bytes) = read_image_file(directory, path) else {
+            continue;
+        };
+        let mut raw = match decoder.raw(&bytes) {
+            Ok(raw) => raw,
+            Err(DecoderUnavailable) => return Err(DecoderUnavailable),
+            Err(Unavailable) => continue,
+        };
+        if let Some(image) = raw.embedded_preview() {
+            return make_preview(image);
+        }
+        drop(raw);
+        if first_source.is_none() {
+            first_source = Some(bytes);
+        } else {
+            alternate_paths.push(path);
+        }
+    }
+
+    let bytes = first_source.ok_or(Unavailable)?;
+    if cancelled() {
+        return Err(Unavailable);
+    }
+    if let Some(image) = decoder.raw(&bytes)?.render(&cancelled) {
+        return make_preview(image);
+    }
+    drop(bytes);
+    for path in alternate_paths {
+        if cancelled() {
+            return Err(Unavailable);
+        }
+        let Some(bytes) = read_image_file(directory, path) else {
+            continue;
+        };
+        if let Ok(raw) = decoder.raw(&bytes)
+            && let Some(image) = raw.render(&cancelled)
+        {
+            return make_preview(image);
+        }
+    }
+    Err(Unavailable)
 }
 
 fn make_preview(image: DecodedImage) -> Result<Pixels, DecodeError> {

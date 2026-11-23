@@ -1,10 +1,15 @@
-use std::{cell::Cell, error::Error, fs, path::Path};
+use std::{
+    cell::Cell,
+    error::Error,
+    fs,
+    path::{Path, PathBuf},
+};
 
 use rusqlite::Connection;
 use tempfile::{TempDir, tempdir};
 
 use crate::{
-    OpenError, OpenOutcome, PendingUpgrade, Project,
+    OpenError, OpenOutcome, PendingUpgrade, PhotographList, Project,
     schema::{APPLICATION_ID, Schema, Upgrade},
 };
 
@@ -53,7 +58,7 @@ fn upgrades_version_one_and_keeps_photo_identity_when_the_folder_moves() -> Test
     let project = pending(&original, crate::schema::SCHEMA)?.apply()?;
     assert_eq!(fs::read(original.join(BACKUP))?, before);
     assert_eq!(
-        project.sync_photographs(10, || false, |_| {})?.paths,
+        listed_paths(project.sync_photographs(10, || false, |_| {})?),
         [Path::new("original.dng")]
     );
     drop(project);
@@ -69,7 +74,7 @@ fn upgrades_version_one_and_keeps_photo_identity_when_the_folder_moves() -> Test
     let project = ready(&moved)?;
     assert_eq!(project.root(), moved.canonicalize()?);
     assert_eq!(
-        project.sync_photographs(10, || false, |_| {})?.paths,
+        listed_paths(project.sync_photographs(10, || false, |_| {})?),
         [Path::new("original.dng")]
     );
     let db = Connection::open(moved.join(DATABASE))?;
@@ -108,7 +113,7 @@ fn rescans_photographs_and_retains_missing_records() -> TestResult {
     let listing = project.sync_photographs(1, || false, |count| found = count)?;
     assert_eq!(found, listing.total);
     assert_eq!(listing.total, 2);
-    assert_eq!(listing.paths, [nested_path.as_path()]);
+    assert_eq!(listed_paths(listing), [nested_path.as_path()]);
     drop(project);
 
     let db = Connection::open(root.join(DATABASE))?;
@@ -123,7 +128,7 @@ fn rescans_photographs_and_retains_missing_records() -> TestResult {
     let listing = ready(root)?.sync_photographs(10, || false, |_| {})?;
     assert_eq!(listing.total, 2);
     assert_eq!(
-        listing.paths,
+        listed_paths(listing),
         [Path::new("added.HEIC"), nested_path.as_path()]
     );
     assert_eq!(photo_record(&db, &nested_name)?, (nested_id, true));
@@ -138,6 +143,56 @@ fn rescans_photographs_and_retains_missing_records() -> TestResult {
     ready(root)?.sync_photographs(0, || false, |_| {})?;
     assert_eq!(photo_record(&db, &["gone.dng"])?, (removed_id, true));
     Ok(())
+}
+
+#[test]
+fn retains_complete_groups_and_separate_file_records() -> TestResult {
+    let folder = tempdir()?;
+    let root = folder.path();
+    fs::create_dir(root.join("subfolder"))?;
+    for name in [
+        "capture.CR2",
+        "capture.JPG",
+        "subfolder/capture.JPG",
+        "capture.NEF",
+        "capture.png",
+    ] {
+        fs::write(root.join(name), b"photo")?;
+    }
+
+    let project = ready(root)?;
+    let limited = project.sync_photographs(1, || false, |_| {})?;
+    assert_eq!(limited.total, 5);
+    assert!(limited.has_more);
+    let [group] = limited.groups.as_slice() else {
+        return Err("expected one visible group".into());
+    };
+    assert_eq!(group.stem, Path::new("capture"));
+    assert_eq!(
+        group.files,
+        ["capture.CR2", "capture.JPG", "capture.NEF", "capture.png"].map(Path::new)
+    );
+
+    let all = project.sync_photographs(2, || false, |_| {})?;
+    assert!(!all.has_more);
+    assert_eq!(
+        all.groups.last().map(|group| group.stem.as_path()),
+        Some(Path::new("subfolder/capture"))
+    );
+
+    let db = Connection::open(root.join(DATABASE))?;
+    let raw = photo_record(&db, &["capture.CR2"])?;
+    let jpeg = photo_record(&db, &["capture.JPG"])?;
+    assert!(raw.1 && jpeg.1 && raw.0 != jpeg.0);
+    Ok(())
+}
+
+fn listed_paths(listing: PhotographList) -> Vec<PathBuf> {
+    listing
+        .groups
+        .into_iter()
+        .flat_map(|group| group.files)
+        .collect()
 }
 
 #[test]
@@ -175,7 +230,7 @@ fn retains_distinct_non_unicode_names() -> TestResult {
 
     let listing = ready(folder.path())?.sync_photographs(10, || false, |_| {})?;
     assert_eq!(
-        listing.paths,
+        listed_paths(listing),
         [b"IMG_\xfe.jpg", b"IMG_\xff.jpg"].map(|name| Path::new(OsStr::from_bytes(name)))
     );
     let db = Connection::open(folder.path().join(DATABASE))?;

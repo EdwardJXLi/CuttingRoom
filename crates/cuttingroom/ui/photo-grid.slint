@@ -6,7 +6,7 @@ export enum PreviewState { pending, ready, unavailable, decoder-unavailable }
 export struct GridPhoto {
     name: string,
     relative-path: string,
-    format: string,
+    formats: [string],
     preview: image,
     state: PreviewState,
 }
@@ -54,20 +54,25 @@ component PhotoTile inherits Rectangle {
                 overflow: elide;
             }
 
-            Rectangle {
+            HorizontalLayout {
                 x: 5px;
                 y: 5px;
-                width: format-label.preferred-width + 8px;
+                width: self.preferred-width;
                 height: 19px;
-                background: #141414da;
+                spacing: 4px;
 
-                format-label := Text {
-                    text: root.photo.format;
-                    color: Palette.text;
-                    font-size: 12px;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                    accessible-role: none;
+                for format in root.photo.formats: Rectangle {
+                    width: format-label.preferred-width + 8px;
+                    background: #141414da;
+
+                    format-label := Text {
+                        text: format;
+                        color: Palette.text;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        accessible-role: none;
+                    }
                 }
             }
         }
