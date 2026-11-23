@@ -4,6 +4,7 @@ import { Message, MessageSeverity } from "message-dialog.slint";
 import { GridPhoto, PhotoGrid } from "photo-grid.slint";
 import { Palette } from "theme.slint";
 import { ResizeHandle } from "resize-handle.slint";
+import { Sidebar, SidebarSection } from "sidebar.slint";
 import { WorkspaceView } from "workspace-header.slint";
 
 component WorkspacePane inherits Rectangle {
@@ -39,12 +40,14 @@ export component PhotoWorkspace inherits VerticalLayout {
     callback grid-viewport-changed(int, int);
 
     private property <bool> browsing: root.view != WorkspaceView.photo;
+    private property <string> active-photo-name: root.active-index >= 0 && root.active-index < root.grid-photos.length
+        ? root.grid-photos[root.active-index].name : "";
     private property <length> handle-thickness: 7px;
-    private property <length> minimum-collections-width: 152px;
-    private property <length> maximum-collections-width: 330px;
+    private property <length> minimum-left-width: 152px;
+    private property <length> maximum-left-width: 330px;
     private property <length> minimum-inspector-width: 228px;
     private property <length> maximum-inspector-width: 490px;
-    private property <length> preferred-collections-width: 184px;
+    private property <length> preferred-left-width: 184px;
     private property <length> preferred-inspector-width: 254px;
     private property <length> filmstrip-height: 114px;
 
@@ -58,7 +61,7 @@ export component PhotoWorkspace inherits VerticalLayout {
         private property <length> right-handle-width: root.show-inspector ? root.handle-thickness : 0px;
         private property <length> dock-space: self.width - self.minimum-center-width
             - self.left-handle-width - self.right-handle-width;
-        private property <length> left-width: root.browsing ? min(root.preferred-collections-width,
+        private property <length> left-width: root.browsing ? min(root.preferred-left-width,
             self.dock-space - (root.show-inspector ? root.minimum-inspector-width : 0px)) : 0px;
         private property <length> right-width: root.show-inspector
             ? min(root.preferred-inspector-width, self.dock-space - self.left-width) : 0px;
@@ -66,31 +69,32 @@ export component PhotoWorkspace inherits VerticalLayout {
         private property <length> center-width: self.width - self.center-x
             - self.right-handle-width - self.right-width;
 
-        if root.browsing: WorkspacePane {
+        if root.browsing: Sidebar {
             x: 0px;
             width: docks.left-width;
-            heading: "Collections";
+            label: "Debug sidebar";
 
-            VerticalLayout {
-                x: 16px;
-                y: 42px;
-                width: parent.width - 32px;
-                height: self.preferred-height;
-                spacing: 6px;
+            SidebarSection {
+                title: "Debug";
 
-                for demo in [
-                    { label: "Test Info", severity: MessageSeverity.info,
-                        heading: "Project ready", message: "Your photos are ready to browse." },
-                    { label: "Test Warning", severity: MessageSeverity.warning,
-                        heading: "Drive disconnected", message: "Reconnect the drive to view the photos in this project." },
-                    { label: "Test Error", severity: MessageSeverity.error,
-                        heading: "Could not open project", message: "Check that you have permission to read the folder and try again." },
-                ]: ActionButton {
-                    text: demo.label;
-                    horizontal-stretch: 1;
-                    clicked => {
-                        root.message-requested({ severity: demo.severity, heading: demo.heading,
-                            text: demo.message, cancellable: true });
+                VerticalLayout {
+                    spacing: 6px;
+
+                    for demo in [
+                        { label: "Test Info", severity: MessageSeverity.info,
+                            heading: "Project ready", message: "Your photos are ready to browse." },
+                        { label: "Test Warning", severity: MessageSeverity.warning,
+                            heading: "Drive disconnected", message: "Reconnect the drive to view the photos in this project." },
+                        { label: "Test Error", severity: MessageSeverity.error,
+                            heading: "Could not open project", message: "Check that you have permission to read the folder and try again." },
+                    ]: ActionButton {
+                        text: demo.label;
+                        compact: true;
+                        horizontal-stretch: 1;
+                        clicked => {
+                            root.message-requested({ severity: demo.severity, heading: demo.heading,
+                                text: demo.message, cancellable: true });
+                        }
                     }
                 }
             }
@@ -99,11 +103,11 @@ export component PhotoWorkspace inherits VerticalLayout {
         if root.browsing: ResizeHandle {
             x: docks.left-width;
             width: docks.left-handle-width;
-            label: "Resize Collections";
+            label: "Resize left sidebar";
             size: docks.left-width;
-            minimum-size: root.minimum-collections-width;
-            maximum-size: min(root.maximum-collections-width, docks.dock-space - docks.right-width);
-            resized(size) => { root.preferred-collections-width = size; }
+            minimum-size: root.minimum-left-width;
+            maximum-size: min(root.maximum-left-width, docks.dock-space - docks.right-width);
+            resized(size) => { root.preferred-left-width = size; }
         }
 
         Rectangle {
@@ -130,7 +134,7 @@ export component PhotoWorkspace inherits VerticalLayout {
         if root.show-inspector: ResizeHandle {
             x: docks.center-x + docks.center-width;
             width: docks.right-handle-width;
-            label: "Resize Photo Information";
+            label: "Resize right sidebar";
             size: docks.right-width;
             minimum-size: root.minimum-inspector-width;
             maximum-size: min(root.maximum-inspector-width, docks.dock-space - docks.left-width);
@@ -138,10 +142,24 @@ export component PhotoWorkspace inherits VerticalLayout {
             resized(size) => { root.preferred-inspector-width = size; }
         }
 
-        if root.show-inspector: WorkspacePane {
+        if root.show-inspector: Sidebar {
             x: docks.width - self.width;
             width: docks.right-width;
-            heading: "Photo Information";
+            label: "Photo sidebar";
+
+            SidebarSection {
+                title: "Photo";
+
+                Text {
+                    height: 24px;
+                    text: root.active-photo-name == "" ? "No photo selected" : root.active-photo-name;
+                    color: root.active-photo-name == "" ? Palette.muted : Palette.text;
+                    font-weight: root.active-photo-name == "" ? 400 : 600;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    accessible-role: text;
+                }
+            }
         }
     }
 

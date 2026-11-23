@@ -4,17 +4,18 @@ export component ActionButton inherits Rectangle {
     in property <string> text;
     in property <bool> enabled: true;
     in property <bool> primary;
+    in property <bool> compact;
     in property <length> button-min-width;
     callback clicked();
 
     min-width: max(root.button-min-width, label.preferred-width + 24px);
-    min-height: 34px;
+    min-height: root.compact ? 30px : 34px;
     horizontal-stretch: 0;
     vertical-stretch: 0;
     forward-focus: keyboard;
-    background: root.primary ? #dbdbdb : #3b3b3b;
+    background: root.primary ? #dbdbdb : root.compact ? Palette.hover : #3b3b3b;
     border-width: 1px;
-    border-color: root.primary ? transparent : #929292;
+    border-color: root.primary ? transparent : root.compact ? #7c7c7c : #929292;
 
     accessible-role: button;
     accessible-label: root.text;
@@ -32,11 +33,11 @@ export component ActionButton inherits Rectangle {
             label.color: #8f8f8f;
         }
         pressed when pointer.pressed: {
-            root.background: root.primary ? Palette.focus : #303030;
+            root.background: root.primary ? Palette.focus : root.compact ? Palette.panel : Palette.hover;
             root.border-color: root.primary ? transparent : #a2a2a2;
         }
         hovered when pointer.has-hover: {
-            root.background: root.primary ? Palette.text : #484848;
+            root.background: root.primary ? Palette.text : root.compact ? Palette.line : #484848;
             root.border-color: root.primary ? transparent : #a5a5a5;
         }
     ]
@@ -47,7 +48,7 @@ export component ActionButton inherits Rectangle {
         height: parent.height;
         text: root.text;
         color: root.primary ? Palette.canvas : Palette.text;
-        font-weight: 600;
+        font-weight: root.compact ? 400 : 600;
         horizontal-alignment: center;
         vertical-alignment: center;
         overflow: elide;

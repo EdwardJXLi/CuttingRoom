@@ -1,0 +1,97 @@
+import { Palette } from "theme.slint";
+
+component SidebarRule inherits Rectangle {
+    height: 1px;
+    background: Palette.line;
+}
+
+export component SidebarSection inherits VerticalLayout {
+    in property <string> title;
+    private property <bool> expanded: true;
+    private property <bool> pointer-focused;
+
+    vertical-stretch: 0;
+    spacing: 0px;
+
+    SidebarRule {}
+    Rectangle {
+        height: 38px;
+        background: pointer.has-hover ? Palette.hover : transparent;
+        border-width: keyboard.has-focus && !root.pointer-focused ? 1px : 0px;
+        border-color: Palette.focus;
+        forward-focus: keyboard;
+        accessible-role: button;
+        accessible-label: root.title;
+        accessible-expandable: true;
+        accessible-expanded: root.expanded;
+        accessible-action-default => { root.expanded = !root.expanded; }
+        accessible-action-expand => { root.expanded = true; }
+
+        Text {
+            x: 8px;
+            width: parent.width - 16px;
+            height: parent.height;
+            text: (root.expanded ? "▾  " : "▸  ") + root.title;
+            font-weight: 600;
+            color: Palette.text;
+            vertical-alignment: center;
+            overflow: elide;
+            accessible-role: none;
+        }
+
+        pointer := TouchArea {
+            clicked => {
+                root.pointer-focused = true;
+                keyboard.focus();
+                root.expanded = !root.expanded;
+            }
+        }
+
+        keyboard := FocusScope {
+            width: 0px;
+            focus-on-click: false;
+            focus-lost => { root.pointer-focused = false; }
+
+            key-pressed(event) => {
+                if event.text == Key.Return || event.text == Key.Space {
+                    root.pointer-focused = false;
+                    if !event.repeat { root.expanded = !root.expanded; }
+                    return accept;
+                }
+                return reject;
+            }
+        }
+    }
+
+    Rectangle {
+        clip: true;
+        height: root.expanded ? body.preferred-height : 0px;
+
+        body := VerticalLayout {
+            visible: root.expanded;
+            y: 0px;
+            height: self.preferred-height;
+            padding-left: 16px;
+            padding-right: 16px;
+            padding-top: 2px;
+            padding-bottom: 12px;
+            spacing: 0px;
+            @children
+        }
+    }
+}
+
+export component Sidebar inherits Rectangle {
+    in property <string> label;
+
+    background: Palette.panel;
+    accessible-role: complementary;
+    accessible-label: root.label;
+
+    VerticalLayout {
+        alignment: start;
+        spacing: 0px;
+        @children
+        SidebarRule {}
+    }
+}
