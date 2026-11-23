@@ -45,7 +45,7 @@ impl Decoder {
     }
 
     pub(crate) fn load(&self, directory: &Dir, path: &Path) -> Result<Pixels, PreviewError> {
-        use PhotographFormat::{Heif, Jpeg, JpegXl, OpenExr, Png, Raw, Tiff, WebP};
+        use PhotographFormat::{Avif, Heif, Jpeg, JpegXl, OpenExr, Png, Raw, Tiff, WebP};
         use PreviewError::{DecoderUnavailable, Unavailable};
 
         let format = photograph_format(path).ok_or(Unavailable)?;
@@ -64,7 +64,7 @@ impl Decoder {
                 let bytes = read_source(file).ok_or(Unavailable)?;
                 decoder.decode(&bytes).ok_or(Unavailable)
             }
-            Heif => {
+            Avif | Heif => {
                 if !cfg!(target_os = "macos") && self.heif.is_none() {
                     return Err(DecoderUnavailable);
                 }

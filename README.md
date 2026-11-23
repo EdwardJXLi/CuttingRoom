@@ -26,6 +26,7 @@ For software rendering, set `SLINT_BACKEND=winit-skia-software` before starting 
 
 For RAW thumbnails, install the LibRaw 0.22.3 shared library.
 For HEIC thumbnails on Linux and Windows, install the libheif 1.23.7 shared library with the libde265 decoder.
+For AVIF thumbnails through libheif, use a build with the dav1d AV1 decoder.
 Use a libheif build with runtime plugin loading disabled.
 Set `CUTTINGROOM_CODEC_DIR` to the absolute path of the directory with these libraries.
 By default, the app loads the libraries from the `codecs` directory next to the executable.
