@@ -7,6 +7,7 @@ export component ActionButton inherits Rectangle {
     in property <bool> compact;
     in property <length> button-min-width;
     callback clicked();
+    private property <bool> pointer-focused;
 
     min-width: max(root.button-min-width, label.preferred-width + 24px);
     min-height: root.compact ? 30px : 34px;
@@ -55,7 +56,7 @@ export component ActionButton inherits Rectangle {
         accessible-role: none;
     }
 
-    if keyboard.has-focus: Rectangle {
+    if keyboard.has-focus && !root.pointer-focused: Rectangle {
         x: -2px;
         y: -2px;
         width: parent.width + 4px;
@@ -66,15 +67,21 @@ export component ActionButton inherits Rectangle {
 
     pointer := TouchArea {
         enabled: root.enabled;
-        clicked => { root.clicked(); }
+        clicked => {
+            root.pointer-focused = true;
+            keyboard.focus();
+            root.clicked();
+        }
     }
 
     keyboard := FocusScope {
         enabled: root.enabled;
         focus-on-click: false;
+        focus-lost => { root.pointer-focused = false; }
 
         key-pressed(event) => {
             if event.text == Key.Space || event.text == Key.Return {
+                root.pointer-focused = false;
                 if !event.repeat {
                     root.clicked();
                 }

@@ -110,38 +110,26 @@ export component PhotoGrid inherits Rectangle {
     private property <length> tile-width: (scroll.visible-width - 24px - (root.columns - 1) * root.gap) / root.columns;
     private property <length> tile-height: min(root.tile-width * 0.69, root.tile-width * 0.55 + 19px) + 72px;
     private property <length> row-height: root.tile-height + root.gap;
-    private property <{ first: int, end: int }> visible-photos: {
+    private property <{ first: int, end: int }> visible-photos: root.visible ? {
         first: max(0, floor(-scroll.content-y / root.row-height) * root.columns),
         end: min(root.photos.length, ceil((scroll.visible-height - scroll.content-y) / root.row-height) * root.columns),
-    };
+    } : { first: 0, end: 0 };
 
-    forward-focus: keyboard;
     changed visible-photos => { root.viewport-changed(self.visible-photos.first, self.visible-photos.end); }
-
-    function activate(index: int) {
-        root.active-index = index;
-        keyboard.focus();
+    changed visible => {
+        if root.visible {
+            root.reveal-active();
+        }
     }
 
-    keyboard := FocusScope {
-        focus-on-click: false;
-        key-pressed(event) => {
-            if root.photos.length == 0 || event.modifiers.control || event.modifiers.alt || event.modifiers.shift || event.modifiers.meta {
-                return reject;
-            }
-            let key = event.text;
-            if key == Key.Return && root.active-index >= 0 {
-                root.open-photo();
-                return accept;
-            }
-            let step = key == Key.LeftArrow ? -1
-                : key == Key.RightArrow ? 1
-                : key == Key.UpArrow ? -root.columns
-                : key == Key.DownArrow ? root.columns : 0;
-            if step == 0 { return reject; }
-            root.active-index = max(0, min(root.photos.length - 1, root.active-index + step));
+    public function navigate(horizontal: int, vertical: int) {
+        root.active-index = clamp(root.active-index + horizontal + vertical * root.columns, 0, root.photos.length - 1);
+        root.reveal-active();
+    }
+
+    function reveal-active() {
+        if root.active-index >= 0 && root.active-index < root.photos.length {
             scroll.ensure-row-visible(floor(root.active-index / root.columns), ScrollBehavior.instant);
-            return accept;
         }
     }
 
@@ -164,17 +152,12 @@ export component PhotoGrid inherits Rectangle {
                 height: root.tile-height;
                 photo: root.photos[self.photo-index];
                 active: root.active-index == self.photo-index;
-                activated => { root.activate(self.photo-index); }
+                activated => { root.active-index = self.photo-index; }
                 opened => {
                     root.active-index = self.photo-index;
                     root.open-photo();
                 }
             }
         }
-    }
-
-    if keyboard.has-focus && root.photos.length > 0: Rectangle {
-        border-width: 1px;
-        border-color: Palette.focus;
     }
 }

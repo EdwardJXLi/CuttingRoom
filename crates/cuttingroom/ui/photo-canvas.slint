@@ -11,7 +11,7 @@ export struct FullPreview {
 export component PhotoCanvas inherits Rectangle {
     in property <[GridPhoto]> photos;
     in property <FullPreview> preview;
-    in-out property <int> active-index;
+    in property <int> active-index;
 
     private property <bool> has-active-photo: root.active-index >= 0 && root.active-index < root.photos.length;
     private property <GridPhoto> photo: root.photos[root.active-index];
@@ -19,49 +19,25 @@ export component PhotoCanvas inherits Rectangle {
         ? root.preview.state : PreviewState.pending;
     private property <bool> show-thumbnail: root.state == PreviewState.pending && root.photo.state == PreviewState.ready;
 
-    forward-focus: keyboard;
-    init => { keyboard.focus(); }
-
-    keyboard := FocusScope {
-        width: 100%;
-        height: 100%;
-
-        key-pressed(event) => {
-            if !root.has-active-photo || event.modifiers.control || event.modifiers.alt || event.modifiers.shift || event.modifiers.meta {
-                return reject;
-            }
-            let step = event.text == Key.LeftArrow || event.text == Key.UpArrow ? -1
-                : event.text == Key.RightArrow || event.text == Key.DownArrow ? 1 : 0;
-            if step == 0 { return reject; }
-            root.active-index = clamp(root.active-index + step, 0, root.photos.length - 1);
-            return accept;
-        }
-
-        if root.has-active-photo && (root.state == PreviewState.ready || root.show-thumbnail): Image {
-            x: 20px;
-            y: 16px;
-            width: parent.width - 40px;
-            height: parent.height - 32px;
-            source: root.show-thumbnail ? root.photo.preview : root.preview.image;
-            image-fit: contain;
-            accessible-label: root.photo.relative-path;
-        }
-
-        if !root.has-active-photo || (root.state != PreviewState.ready && !root.show-thumbnail): Text {
-            width: 100%;
-            height: 100%;
-            text: !root.has-active-photo ? "No photo selected"
-                : root.state == PreviewState.pending ? "Loading preview…"
-                : root.state == PreviewState.decoder-unavailable ? "Preview decoder unavailable"
-                : "Preview unavailable";
-            color: Palette.muted;
-            horizontal-alignment: center;
-            vertical-alignment: center;
-        }
+    if root.has-active-photo && (root.state == PreviewState.ready || root.show-thumbnail): Image {
+        x: 20px;
+        y: 16px;
+        width: parent.width - 40px;
+        height: parent.height - 32px;
+        source: root.show-thumbnail ? root.photo.preview : root.preview.image;
+        image-fit: contain;
+        accessible-label: root.photo.relative-path;
     }
 
-    if keyboard.has-focus && root.has-active-photo: Rectangle {
-        border-width: 1px;
-        border-color: Palette.focus;
+    if !root.has-active-photo || (root.state != PreviewState.ready && !root.show-thumbnail): Text {
+        width: 100%;
+        height: 100%;
+        text: !root.has-active-photo ? "No photo selected"
+            : root.state == PreviewState.pending ? "Loading preview…"
+            : root.state == PreviewState.decoder-unavailable ? "Preview decoder unavailable"
+            : "Preview unavailable";
+        color: Palette.muted;
+        horizontal-alignment: center;
+        vertical-alignment: center;
     }
 }

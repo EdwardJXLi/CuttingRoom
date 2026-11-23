@@ -42,14 +42,31 @@ export component MainWindow inherits Window {
     private property <bool> show-filmstrip: true;
     private property <bool> show-inspector: true;
     private property <Message> current-message;
+    private property <bool> popup-open: message-dialog.is-open || about.is-open;
 
-    changed active-index => { root.active-photo-changed(); }
+    forward-focus: navigation;
+    init => { navigation.focus(); }
+
+    changed active-index => {
+        if !root.popup-open { navigation.focus(); }
+        root.active-photo-changed();
+    }
     changed view => {
+        navigation.focus();
         if root.view == WorkspaceView.grid {
             root.active-photo-changed();
         } else {
             root.grid-viewport-changed(0, 0);
         }
+    }
+    changed show-project-info => {
+        if !root.show-project-info { navigation.focus(); }
+    }
+    changed show-filmstrip => {
+        if !root.show-filmstrip { navigation.focus(); }
+    }
+    changed show-inspector => {
+        if !root.show-inspector { navigation.focus(); }
     }
 
     public function show-message(message: Message) {
@@ -65,7 +82,7 @@ export component MainWindow inherits Window {
             MenuItem {
                 title: "About CuttingRoom";
                 role: MenuItemRole.about;
-                enabled: !message-dialog.is-open;
+                enabled: !root.popup-open;
                 activated => { about.show(); }
             }
             MenuSeparator {}
@@ -80,7 +97,7 @@ export component MainWindow inherits Window {
             MenuItem {
                 title: "Rescan Folder";
                 shortcut: @keys(Control + R);
-                enabled: root.project-open && !root.scan-active && !message-dialog.is-open;
+                enabled: root.project-open && !root.scan-active && !root.popup-open;
                 activated => { root.rescan-folder(); }
             }
             MenuItem { title: "Export Metadata"; enabled: false; }
@@ -88,7 +105,7 @@ export component MainWindow inherits Window {
             MenuItem {
                 title: "Close Window";
                 shortcut: @keys(Control + W);
-                enabled: !message-dialog.is-open;
+                enabled: !root.popup-open;
                 activated => { root.close(); }
             }
         }
@@ -106,75 +123,86 @@ export component MainWindow inherits Window {
             ]: MenuItem {
                 title: option.title;
                 shortcut: option.shortcut;
-                enabled: !message-dialog.is-open;
+                enabled: !root.popup-open;
                 activated => { root.view = option.view; }
             }
             MenuSeparator {}
             MenuItem {
                 title: "Photo Information";
                 shortcut: @keys(I);
-                enabled: !message-dialog.is-open;
+                enabled: !root.popup-open;
                 checkable: true;
                 checked <=> root.show-inspector;
             }
             MenuItem {
                 title: "Project Information";
                 shortcut: @keys(P);
-                enabled: !message-dialog.is-open;
+                enabled: !root.popup-open;
                 checkable: true;
                 checked <=> root.show-project-info;
             }
             MenuItem {
                 title: "Filmstrip";
                 shortcut: @keys(F);
-                enabled: !message-dialog.is-open;
+                enabled: !root.popup-open;
                 checkable: true;
                 checked <=> root.show-filmstrip;
             }
         }
     }
 
-    VerticalLayout {
-        spacing: 0px;
+    navigation := FocusScope {
+        focus-on-tab-navigation: false;
 
-        header := WorkspaceHeader {
-            project-title: root.project-title;
-            view <=> root.view;
-        }
-        Rectangle { height: 1px; background: Palette.line; }
-        PhotoWorkspace {
-            vertical-stretch: 1;
-            view: root.view;
-            show-project-info: root.show-project-info;
-            show-filmstrip: root.show-filmstrip;
-            show-inspector: root.show-inspector;
-            photo-files: root.photo-files;
-            grid-photos: root.grid-photos;
-            full-preview: root.full-preview;
-            active-index <=> root.active-index;
-            grid-viewport-changed(first, end) => { root.grid-viewport-changed(first, end); }
-            open-photo => { root.view = WorkspaceView.photo; }
-            message-requested(message) => { root.show-message(message); }
-        }
-        BottomBar {
-            Text {
-                text: root.status-text;
-                color: Palette.muted;
-                font-size: 12px;
-                vertical-alignment: center;
-                horizontal-stretch: 1;
-                overflow: elide;
+        capture-key-pressed(event) => {
+            if root.popup-open || event.modifiers.control || event.modifiers.alt || event.modifiers.shift || event.modifiers.meta {
+                return reject;
             }
+            return workspace.navigate(event.text, event.repeat) ? accept : reject;
+        }
 
-            if root.scan-active: Rectangle {
-                width: 144px;
+        VerticalLayout {
+            spacing: 0px;
 
-                ProgressIndicator {
-                    width: 100%;
-                    height: 5px;
-                    y: (parent.height - self.height) / 2;
-                    indeterminate: true;
-                    accessible-label: "Folder scan";
+            header := WorkspaceHeader {
+                project-title: root.project-title;
+                view <=> root.view;
+            }
+            Rectangle { height: 1px; background: Palette.line; }
+            workspace := PhotoWorkspace {
+                vertical-stretch: 1;
+                view: root.view;
+                show-project-info: root.show-project-info;
+                show-filmstrip: root.show-filmstrip;
+                show-inspector: root.show-inspector;
+                photo-files: root.photo-files;
+                grid-photos: root.grid-photos;
+                full-preview: root.full-preview;
+                active-index <=> root.active-index;
+                grid-viewport-changed(first, end) => { root.grid-viewport-changed(first, end); }
+                open-photo => { root.view = WorkspaceView.photo; }
+                message-requested(message) => { root.show-message(message); }
+            }
+            BottomBar {
+                Text {
+                    text: root.status-text;
+                    color: Palette.muted;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    overflow: elide;
+                }
+
+                if root.scan-active: Rectangle {
+                    width: 144px;
+
+                    ProgressIndicator {
+                        width: 100%;
+                        height: 5px;
+                        y: (parent.height - self.height) / 2;
+                        indeterminate: true;
+                        accessible-label: "Folder scan";
+                    }
                 }
             }
         }

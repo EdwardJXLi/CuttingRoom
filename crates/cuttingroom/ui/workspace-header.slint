@@ -71,7 +71,6 @@ component ViewTab inherits Rectangle {
 
     keyboard := FocusScope {
         width: 0px;
-        focus-on-tab-navigation: root.selected;
         focus-lost => { root.pointer-focused = false; }
 
         key-pressed(event) => {

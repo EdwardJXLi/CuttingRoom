@@ -8,6 +8,28 @@ import { ResizeHandle } from "resize-handle.slint";
 import { Sidebar, SidebarSection } from "sidebar.slint";
 import { WorkspaceView } from "workspace-header.slint";
 
+component PhotoFileList inherits StandardListView {
+    public function navigate(key: string, step: int) -> bool {
+        if step != 0 {
+            root.set-current-item(clamp(root.current-item + step, 0, root.model.length - 1));
+            return true;
+        }
+
+        if key == Key.Home {
+            root.set-current-item(0);
+        } else if key == Key.End {
+            root.set-current-item(root.model.length - 1);
+        } else if key == Key.PageUp || key == Key.PageDown {
+            let page = max(1, floor(root.visible-height * root.model.length / max(1px, root.content-height)) - 1);
+            let index = root.current-item + (key == Key.PageUp ? -page : page);
+            root.set-current-item(clamp(index, 0, root.model.length - 1));
+        } else {
+            return false;
+        }
+        return true;
+    }
+}
+
 component WorkspacePane inherits Rectangle {
     in property <string> heading;
 
@@ -87,6 +109,32 @@ export component PhotoWorkspace inherits VerticalLayout {
     private property <length> preferred-inspector-width: 254px;
     private property <length> filmstrip-height: 114px;
 
+    public function navigate(key: string, repeat: bool) -> bool {
+        if root.grid-photos.length == 0 {
+            return false;
+        }
+        if root.view == WorkspaceView.grid && key == Key.Return && root.has-active-photo {
+            if !repeat {
+                root.open-photo();
+            }
+            return true;
+        }
+        let horizontal = key == Key.LeftArrow ? -1 : key == Key.RightArrow ? 1 : 0;
+        let vertical = key == Key.UpArrow ? -1 : key == Key.DownArrow ? 1 : 0;
+        if root.view == WorkspaceView.grid {
+            if horizontal == 0 && vertical == 0 { return false; }
+            grid.navigate(horizontal, vertical);
+            return true;
+        }
+        let step = horizontal + vertical;
+        if root.view == WorkspaceView.list {
+            return files.navigate(key, step);
+        }
+        if step == 0 { return false; }
+        root.active-index = clamp(root.active-index + step, 0, root.grid-photos.length - 1);
+        return true;
+    }
+
     spacing: 0px;
 
     docks := Rectangle {
@@ -153,25 +201,32 @@ export component PhotoWorkspace inherits VerticalLayout {
             background: Palette.canvas;
             accessible-role: main;
 
-            if root.view == WorkspaceView.grid: PhotoGrid {
+            grid := PhotoGrid {
+                visible: root.view == WorkspaceView.grid;
                 photos: root.grid-photos;
                 active-index <=> root.active-index;
                 viewport-changed(first, end) => { root.grid-viewport-changed(first, end); }
                 open-photo => { root.open-photo(); }
             }
 
-            if root.view == WorkspaceView.list && root.photo-files.length > 0: StandardListView {
+            files := PhotoFileList {
+                visible: root.view == WorkspaceView.list && root.photo-files.length > 0;
                 width: 100%;
                 height: 100%;
                 accessible-label: "Photo files";
                 model: root.photo-files;
                 current-item <=> root.active-index;
+                changed visible => {
+                    if self.visible && root.has-active-photo {
+                        self.ensure-row-visible(root.active-index, ScrollBehavior.instant);
+                    }
+                }
             }
 
             if root.view == WorkspaceView.photo: PhotoCanvas {
                 photos: root.grid-photos;
                 preview: root.full-preview;
-                active-index <=> root.active-index;
+                active-index: root.active-index;
             }
         }
 

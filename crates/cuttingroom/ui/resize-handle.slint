@@ -21,6 +21,7 @@ export component ResizeHandle inherits Rectangle {
 
     accessible-role: slider;
     accessible-label: root.label;
+    accessible-description: "Shift and arrow keys";
     accessible-orientation: root.resize-axis;
     accessible-value: root.size / 1px;
     accessible-value-minimum: root.minimum-size / 1px;
@@ -83,6 +84,9 @@ export component ResizeHandle inherits Rectangle {
         width: 0px;
 
         key-pressed(event) => {
+            if !event.modifiers.shift || event.modifiers.control || event.modifiers.alt || event.modifiers.meta {
+                return reject;
+            }
             if event.text == (root.vertical ? Key.UpArrow : Key.LeftArrow) {
                 root.resize-to(root.size - root.forward-step);
                 return accept;
