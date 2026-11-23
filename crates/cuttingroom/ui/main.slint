@@ -38,6 +38,8 @@ export component MainWindow inherits Window {
     callback grid-viewport-changed(int, int);
     callback active-photo-changed();
     private property <WorkspaceView> view: WorkspaceView.grid;
+    private property <bool> show-project-info: true;
+    private property <bool> show-filmstrip: true;
     private property <bool> show-inspector: true;
     private property <Message> current-message;
 
@@ -115,6 +117,20 @@ export component MainWindow inherits Window {
                 checkable: true;
                 checked <=> root.show-inspector;
             }
+            MenuItem {
+                title: "Project Information";
+                shortcut: @keys(P);
+                enabled: !message-dialog.is-open;
+                checkable: true;
+                checked <=> root.show-project-info;
+            }
+            MenuItem {
+                title: "Filmstrip";
+                shortcut: @keys(F);
+                enabled: !message-dialog.is-open;
+                checkable: true;
+                checked <=> root.show-filmstrip;
+            }
         }
     }
 
@@ -129,6 +145,8 @@ export component MainWindow inherits Window {
         PhotoWorkspace {
             vertical-stretch: 1;
             view: root.view;
+            show-project-info: root.show-project-info;
+            show-filmstrip: root.show-filmstrip;
             show-inspector: root.show-inspector;
             photo-files: root.photo-files;
             grid-photos: root.grid-photos;

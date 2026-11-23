@@ -58,6 +58,8 @@ component MetadataRow inherits HorizontalLayout {
 
 export component PhotoWorkspace inherits VerticalLayout {
     in property <WorkspaceView> view;
+    in property <bool> show-project-info;
+    in property <bool> show-filmstrip;
     in property <bool> show-inspector;
     in property <[StandardListViewItem]> photo-files;
     in property <[GridPhoto]> grid-photos;
@@ -91,11 +93,12 @@ export component PhotoWorkspace inherits VerticalLayout {
         vertical-stretch: 1;
 
         private property <length> minimum-center-width: root.browsing ? 436px : 330px;
-        private property <length> left-handle-width: root.browsing ? root.handle-thickness : 0px;
+        private property <bool> left-open: root.browsing && root.show-project-info;
+        private property <length> left-handle-width: self.left-open ? root.handle-thickness : 0px;
         private property <length> right-handle-width: root.show-inspector ? root.handle-thickness : 0px;
         private property <length> dock-space: self.width - self.minimum-center-width
             - self.left-handle-width - self.right-handle-width;
-        private property <length> left-width: root.browsing ? min(root.preferred-left-width,
+        private property <length> left-width: self.left-open ? min(root.preferred-left-width,
             self.dock-space - (root.show-inspector ? root.minimum-inspector-width : 0px)) : 0px;
         private property <length> right-width: root.show-inspector
             ? min(root.preferred-inspector-width, self.dock-space - self.left-width) : 0px;
@@ -103,7 +106,7 @@ export component PhotoWorkspace inherits VerticalLayout {
         private property <length> center-width: self.width - self.center-x
             - self.right-handle-width - self.right-width;
 
-        if root.browsing: Sidebar {
+        if docks.left-open: Sidebar {
             x: 0px;
             width: docks.left-width;
             label: "Debug sidebar";
@@ -134,7 +137,7 @@ export component PhotoWorkspace inherits VerticalLayout {
             }
         }
 
-        if root.browsing: ResizeHandle {
+        if docks.left-open: ResizeHandle {
             x: docks.left-width;
             width: docks.left-handle-width;
             label: "Resize left sidebar";
@@ -229,7 +232,7 @@ export component PhotoWorkspace inherits VerticalLayout {
         }
     }
 
-    if !root.browsing: ResizeHandle {
+    if !root.browsing && root.show-filmstrip: ResizeHandle {
         height: root.handle-thickness;
         label: "Resize Filmstrip";
         size: root.filmstrip-height;
@@ -240,7 +243,7 @@ export component PhotoWorkspace inherits VerticalLayout {
         resized(size) => { root.filmstrip-height = size; }
     }
 
-    if !root.browsing: WorkspacePane {
+    if !root.browsing && root.show-filmstrip: WorkspacePane {
         height: 38px + root.filmstrip-height;
         heading: "Filmstrip";
     }
