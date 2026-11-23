@@ -158,6 +158,13 @@ export component MainWindow inherits Window {
             if root.popup-open || event.modifiers.control || event.modifiers.alt || event.modifiers.shift || event.modifiers.meta {
                 return reject;
             }
+            if event.text == Key.Escape {
+                if root.view == WorkspaceView.grid {
+                    return reject;
+                }
+                root.view = WorkspaceView.grid;
+                return accept;
+            }
             return workspace.navigate(event.text, event.repeat) ? accept : reject;
         }
 
