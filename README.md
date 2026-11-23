@@ -25,8 +25,10 @@ cargo run -p cuttingroom --locked -- "/path/to/photo folder"
 For software rendering, set `SLINT_BACKEND=winit-skia-software` before starting the app.
 
 For RAW thumbnails, install the LibRaw 0.22.3 shared library.
-Set `CUTTINGROOM_CODEC_DIR` to the absolute path of the directory with this library.
-By default, the app loads the library from the `codecs` directory next to the executable.
+For HEIC thumbnails on Linux and Windows, install the libheif 1.23.7 shared library with the libde265 decoder.
+Use a libheif build with runtime plugin loading disabled.
+Set `CUTTINGROOM_CODEC_DIR` to the absolute path of the directory with these libraries.
+By default, the app loads the libraries from the `codecs` directory next to the executable.
 
 ### Database development
 

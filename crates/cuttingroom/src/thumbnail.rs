@@ -11,6 +11,9 @@ use image::{
 };
 use slint::{Rgba8Pixel, SharedPixelBuffer};
 
+mod heif;
+#[cfg(target_os = "macos")]
+mod image_io;
 mod native_library;
 mod raw;
 
@@ -28,12 +31,14 @@ pub(crate) enum PreviewError {
 
 pub(crate) struct Decoder {
     raw: Option<raw::RawDecoder>,
+    heif: Option<heif::HeifDecoder>,
 }
 
 impl Decoder {
     pub(crate) fn new() -> Self {
         Self {
             raw: raw::RawDecoder::new(),
+            heif: heif::HeifDecoder::new(),
         }
     }
 
@@ -54,7 +59,19 @@ impl Decoder {
                 let bytes = read_source(file).ok_or(Unavailable)?;
                 decoder.decode(&bytes).ok_or(Unavailable)
             }
-            Heif => Err(Unavailable),
+            Heif => {
+                if !cfg!(target_os = "macos") && self.heif.is_none() {
+                    return Err(DecoderUnavailable);
+                }
+                let bytes = read_source(file).ok_or(Unavailable)?;
+                #[cfg(target_os = "macos")]
+                if let Some(pixels) = image_io::decode(&bytes).map_err(|()| Unavailable)? {
+                    return Ok(pixels);
+                }
+                let decoder = self.heif.as_ref().ok_or(DecoderUnavailable)?;
+                let image = decoder.decode(&bytes).ok_or(Unavailable)?;
+                Ok(make_preview(image, Orientation::NoTransforms))
+            }
         }
     }
 }
