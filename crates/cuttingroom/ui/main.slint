@@ -21,6 +21,8 @@ export component MainWindow inherits Window {
 
     in property <string> app-version;
     in property <string> project-title: "No project open";
+    in property <[StandardListViewItem]> photo-files;
+    in property <string> file-list-status;
     callback message-dismissed(accepted: bool);
     private property <WorkspaceView> view: WorkspaceView.grid;
     private property <bool> show-inspector: true;
@@ -100,6 +102,8 @@ export component MainWindow inherits Window {
             vertical-stretch: 1;
             view: root.view;
             show-inspector: root.show-inspector;
+            photo-files: root.photo-files;
+            file-list-status: root.file-list-status;
             message-requested(message) => { root.show-message(message); }
         }
     }

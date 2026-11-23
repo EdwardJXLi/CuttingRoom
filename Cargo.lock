@@ -830,13 +830,17 @@ checksum = "7704b5fdd17b18ae31c4c1da5a2e0305a2bf17b5249300a9ee9ed7b72114c636"
 name = "cr-project"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "diesel",
  "libc",
  "libsqlite3-sys",
  "percent-encoding",
  "rusqlite",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+ "uuid",
+ "walkdir",
  "windows-sys 0.61.2",
 ]
 
@@ -4744,6 +4748,7 @@ version = "1.29.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3c14b15dffa2f4bd712103e857140aa04a4f2ff6e955c77d7eb8e53ee02a3b64"
 dependencies = [
+ "getrandom 0.4.3",
  "js-sys",
  "serde_core",
  "wasm-bindgen",

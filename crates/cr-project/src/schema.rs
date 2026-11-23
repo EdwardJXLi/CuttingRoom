@@ -55,8 +55,11 @@ pub(crate) struct Schema {
 }
 
 pub(crate) const SCHEMA: Schema = Schema {
-    version: BASE_VERSION,
-    upgrades: &[],
+    version: 2,
+    upgrades: &[Upgrade {
+        from: BASE_VERSION,
+        sql: include_str!("../migrations/2_add_photos/up.sql"),
+    }],
 };
 
 pub(crate) struct Upgrade {

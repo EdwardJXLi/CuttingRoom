@@ -1,4 +1,4 @@
-use std::{error::Error, fs, path::Path};
+use std::{cell::Cell, error::Error, fs, path::Path};
 
 use rusqlite::Connection;
 use tempfile::{TempDir, tempdir};
@@ -11,6 +11,10 @@ use crate::{
 const STORAGE: &str = ".cuttingroom";
 const DATABASE: &str = ".cuttingroom/project.sqlite";
 const BACKUP: &str = ".cuttingroom/project.sqlite.v1.bak1";
+const LEGACY_SCHEMA: Schema = Schema {
+    version: 1,
+    upgrades: &[],
+};
 const UPGRADE: Upgrade = Upgrade {
     from: 1,
     sql: "ALTER TABLE fixture ADD COLUMN migrated INTEGER NOT NULL DEFAULT 1;",
@@ -23,12 +27,12 @@ const NEXT_SCHEMA: Schema = Schema {
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
 #[test]
-fn creates_version_one_and_reopens_a_moved_folder() -> TestResult {
+fn upgrades_version_one_and_keeps_photo_identity_when_the_folder_moves() -> TestResult {
     let folder = tempdir()?;
     let original = folder.path().join("photos #1");
     fs::create_dir(&original)?;
     fs::write(original.join("original.dng"), b"photo")?;
-    drop(ready(&original)?);
+    drop(legacy_project(&original)?);
 
     let db = Connection::open(original.join(DATABASE))?;
     let application_id: i32 = db.pragma_query_value(None, "application_id", |row| row.get(0))?;
@@ -40,11 +44,148 @@ fn creates_version_one_and_reopens_a_moved_folder() -> TestResult {
     drop(db);
 
     let before = fs::read(original.join(DATABASE))?;
+    let upgrade = pending(&original, crate::schema::SCHEMA)?;
+    assert_eq!(upgrade.versions(), (1, 2));
+    drop(upgrade);
+    assert_eq!(fs::read(original.join(DATABASE))?, before);
+    assert!(!original.join(BACKUP).exists());
+
+    let project = pending(&original, crate::schema::SCHEMA)?.apply()?;
+    assert_eq!(fs::read(original.join(BACKUP))?, before);
+    assert_eq!(
+        project.sync_photographs(10, || false)?.paths,
+        ["original.dng"]
+    );
+    drop(project);
+
+    let db = Connection::open(original.join(DATABASE))?;
+    assert_eq!(version(&db)?, 2);
+    let id = photo_record(&db, &["original.dng"])?.0;
+    assert_eq!(uuid::Uuid::parse_str(&id)?.get_version_num(), 4);
+    drop(db);
+
     let moved = folder.path().join("renamed photos");
     fs::rename(&original, &moved)?;
-    assert_eq!(ready(&moved)?.root(), moved.canonicalize()?);
-    assert_eq!(fs::read(moved.join(DATABASE))?, before);
+    let project = ready(&moved)?;
+    assert_eq!(project.root(), moved.canonicalize()?);
+    assert_eq!(
+        project.sync_photographs(10, || false)?.paths,
+        ["original.dng"]
+    );
+    let db = Connection::open(moved.join(DATABASE))?;
+    assert_eq!(photo_record(&db, &["original.dng"])?, (id, true));
     assert_eq!(fs::read(moved.join("original.dng"))?, b"photo");
+    Ok(())
+}
+
+#[test]
+fn rescans_photographs_and_retains_missing_records() -> TestResult {
+    let folder = tempdir()?;
+    let root = folder.path();
+    let nested_path = Path::new("day 2").join("é.JPG");
+    fs::create_dir(root.join("day 2"))?;
+    fs::write(root.join(&nested_path), b"jpeg")?;
+    fs::write(root.join("gone.dng"), b"raw")?;
+    fs::write(root.join("notes.txt"), b"notes")?;
+    for excluded in ["nested/.cuttingroom", ".Trash"] {
+        fs::create_dir_all(root.join(excluded))?;
+    }
+    fs::write(root.join("nested/other.jpg"), b"nested project")?;
+    fs::write(root.join(".Trash/removed.jpg"), b"trashed photo")?;
+    #[cfg(unix)]
+    let outside = tempdir()?;
+    #[cfg(unix)]
+    {
+        let photo = outside.path().join("outside.jpg");
+        fs::write(&photo, b"outside")?;
+        std::os::unix::fs::symlink(&photo, root.join("linked.jpg"))?;
+        std::os::unix::fs::symlink(outside.path(), root.join("linked directory"))?;
+    }
+
+    let project = ready(root)?;
+    fs::write(root.join(STORAGE).join("preview.png"), b"cache")?;
+    let listing = project.sync_photographs(1, || false)?;
+    assert_eq!(listing.total, 2);
+    assert_eq!(listing.paths, [nested_path.to_string_lossy()]);
+    drop(project);
+
+    let db = Connection::open(root.join(DATABASE))?;
+    let nested_display = nested_path.to_str().ok_or("expected a Unicode path")?;
+    let nested_name = ["day 2", "é.JPG"];
+    let (nested_id, nested_present) = photo_record(&db, &nested_name)?;
+    let (removed_id, removed_present) = photo_record(&db, &["gone.dng"])?;
+    assert!(nested_present && removed_present);
+
+    fs::remove_file(root.join("gone.dng"))?;
+    fs::write(root.join(&nested_path), b"a changed jpeg")?;
+    fs::write(root.join("added.HEIC"), b"new photo")?;
+    let listing = ready(root)?.sync_photographs(10, || false)?;
+    assert_eq!(listing.total, 2);
+    assert_eq!(listing.paths, ["added.HEIC", nested_display]);
+    assert_eq!(photo_record(&db, &nested_name)?, (nested_id, true));
+    assert_eq!(
+        photo_record(&db, &["gone.dng"])?,
+        (removed_id.clone(), false)
+    );
+    assert!(photo_record(&db, &["added.HEIC"])?.1);
+    assert_eq!(fs::read(root.join(&nested_path))?, b"a changed jpeg");
+
+    fs::write(root.join("gone.dng"), b"returned photo")?;
+    ready(root)?.sync_photographs(0, || false)?;
+    assert_eq!(photo_record(&db, &["gone.dng"])?, (removed_id, true));
+    Ok(())
+}
+
+#[test]
+fn cancelled_rescan_preserves_the_previous_inventory() -> TestResult {
+    let folder = tempdir()?;
+    let root = folder.path();
+    let saved = root.join("saved.jpg");
+    fs::write(&saved, b"saved")?;
+    let project = ready(root)?;
+    project.sync_photographs(10, || false)?;
+    let before = fs::read(root.join(DATABASE))?;
+    fs::remove_file(saved)?;
+    for number in 0..300 {
+        fs::write(root.join(format!("{number}.jpg")), b"new")?;
+    }
+
+    let checks = Cell::new(0);
+    let result = project.sync_photographs(10, || {
+        checks.set(checks.get() + 1);
+        checks.get() >= 280
+    });
+    assert!(matches!(result, Err(OpenError::ScanCancelled)));
+    assert_eq!(fs::read(root.join(DATABASE))?, before);
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn retains_distinct_non_unicode_names() -> TestResult {
+    use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
+
+    use base64::{Engine, engine::general_purpose::STANDARD};
+
+    let folder = tempdir()?;
+    for name in [b"IMG_\xfe.jpg", b"IMG_\xff.jpg"] {
+        fs::write(folder.path().join(OsStr::from_bytes(name)), b"native")?;
+    }
+
+    let listing = ready(folder.path())?.sync_photographs(10, || false)?;
+    assert_eq!(listing.paths, ["IMG_�.jpg", "IMG_�.jpg"]);
+    let db = Connection::open(folder.path().join(DATABASE))?;
+    let mut query = db.prepare("SELECT path FROM photos ORDER BY path")?;
+    let payloads = query
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (payload, name) in payloads.iter().zip([b"IMG_\xfe.jpg", b"IMG_\xff.jpg"]) {
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(payload)?,
+            serde_json::json!({ "encoding": "unix-bytes", "components_base64": [STANDARD.encode(name)] })
+        );
+    }
+    assert_eq!(payloads.len(), 2);
     Ok(())
 }
 
@@ -89,7 +230,7 @@ fn stale_lock_requires_confirmation_and_is_cleaned_on_close() -> TestResult {
 fn upgrade_requires_other_sessions_to_close() -> TestResult {
     let folder = upgrade_fixture()?;
     let root = folder.path();
-    let first = ready(root)?;
+    let first = legacy_project(root)?;
     let OpenOutcome::NeedsUpgrade(upgrade) =
         Project::open_with_schema(root, NEXT_SCHEMA, || Ok(true))?
     else {
@@ -106,13 +247,13 @@ fn unknown_version_is_rejected_before_writes() -> TestResult {
     let folder = tempdir()?;
     drop(ready(folder.path())?);
     let path = folder.path().join(DATABASE);
-    Connection::open(&path)?.pragma_update(None, "user_version", 2)?;
+    Connection::open(&path)?.pragma_update(None, "user_version", 3)?;
     let before = fs::read(&path)?;
     assert!(matches!(
         open(folder.path()),
         Err(OpenError::UnsupportedSchema {
-            found: 2,
-            supported: 1
+            found: 3,
+            supported: 2
         })
     ));
     assert_eq!(fs::read(&path)?, before);
@@ -259,12 +400,29 @@ fn pending(path: &Path, schema: Schema) -> TestResult<PendingUpgrade> {
 
 fn upgrade_fixture() -> TestResult<TempDir> {
     let folder = tempdir()?;
-    drop(ready(folder.path())?);
+    drop(legacy_project(folder.path())?);
     Connection::open(folder.path().join(DATABASE))?.execute_batch(
         "CREATE TABLE fixture (note TEXT NOT NULL);
          INSERT INTO fixture VALUES ('keep this');",
     )?;
     Ok(folder)
+}
+
+fn legacy_project(path: &Path) -> TestResult<Project> {
+    let OpenOutcome::Ready(project) = Project::open_with_schema(path, LEGACY_SCHEMA, || Ok(false))?
+    else {
+        return Err("expected a version 1 project".into());
+    };
+    Ok(project)
+}
+
+fn photo_record(db: &Connection, components: &[&str]) -> rusqlite::Result<(String, bool)> {
+    let path = serde_json::json!({ "encoding": "unicode", "components": components });
+    db.query_row(
+        "SELECT id, present FROM photos WHERE path = ?",
+        [path.to_string()],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
 }
 
 fn version(db: &Connection) -> rusqlite::Result<i32> {

@@ -9,14 +9,21 @@ use std::{
 };
 
 use async_channel::{Receiver, Sender, bounded};
-use cr_project::{OpenError, OpenOutcome, Project};
-use slint::{ComponentHandle, Weak};
+use cr_project::{OpenError, OpenOutcome, PhotographList, Project};
+use slint::{ComponentHandle, ModelRc, VecModel, Weak, language::StandardListViewItem};
 
 use crate::{MainWindow, Message, MessageSeverity};
 
+const FILE_LIST_LIMIT: u32 = 10_000;
+
+struct LoadedProject {
+    project: Project,
+    photographs: PhotographList,
+}
+
 enum ProjectEvent {
     Confirm(Message, Sender<bool>),
-    Finished(Result<Option<Project>, OpenError>),
+    Finished(Result<Option<LoadedProject>, OpenError>),
 }
 
 #[derive(Default)]
@@ -37,6 +44,7 @@ pub(crate) fn run(initial_folder: Option<PathBuf>) -> Result<ExitCode, Box<dyn E
     let state = Rc::new(RefCell::new(WindowState::default()));
     let opening = initial_folder
         .map(|folder| {
+            window.set_file_list_status("Loading folder…".into());
             let state = Rc::clone(&state);
             open_folder(&window, folder, move |window, result| {
                 finish_initial_open(window, &mut state.borrow_mut(), result);
@@ -59,7 +67,7 @@ pub(crate) fn run(initial_folder: Option<PathBuf>) -> Result<ExitCode, Box<dyn E
 fn open_folder(
     window: &MainWindow,
     folder: PathBuf,
-    completed: impl FnOnce(&MainWindow, Result<Option<Project>, OpenError>) + 'static,
+    completed: impl FnOnce(&MainWindow, Result<Option<LoadedProject>, OpenError>) + 'static,
 ) -> Result<ProjectOpen, Box<dyn Error>> {
     let (events, requests) = bounded(1);
     let task = slint::spawn_local(handle_events(window.as_weak(), requests.clone(), completed))?;
@@ -92,7 +100,7 @@ impl ProjectOpen {
 async fn handle_events(
     window: Weak<MainWindow>,
     requests: Receiver<ProjectEvent>,
-    completed: impl FnOnce(&MainWindow, Result<Option<Project>, OpenError>),
+    completed: impl FnOnce(&MainWindow, Result<Option<LoadedProject>, OpenError>),
 ) {
     while let Ok(event) = requests.recv().await {
         let Some(window) = window.upgrade() else {
@@ -117,16 +125,34 @@ async fn handle_events(
 fn finish_initial_open(
     window: &MainWindow,
     state: &mut WindowState,
-    result: Result<Option<Project>, OpenError>,
+    result: Result<Option<LoadedProject>, OpenError>,
 ) {
+    window.set_file_list_status("".into());
     match result {
-        Ok(Some(project)) => {
+        Ok(Some(LoadedProject {
+            project,
+            photographs,
+        })) => {
             let root = project.root();
             let name = root
                 .file_name()
                 .unwrap_or(root.as_os_str())
                 .to_string_lossy();
             window.set_project_title(name.as_ref().into());
+            let status = match photographs.total {
+                0 => "No photos found".into(),
+                total if total > i64::from(FILE_LIST_LIMIT) => {
+                    format!("Showing {FILE_LIST_LIMIT} of {total} photos").into()
+                }
+                _ => "".into(),
+            };
+            let rows: Vec<_> = photographs
+                .paths
+                .into_iter()
+                .map(|path| StandardListViewItem::from(path.as_str()))
+                .collect();
+            window.set_photo_files(ModelRc::new(VecModel::from(rows)));
+            window.set_file_list_status(status);
             state.project = Some(project);
         }
         Ok(None) => {
@@ -154,7 +180,7 @@ fn finish_initial_open(
 fn load_project(
     folder: &Path,
     events: &Sender<ProjectEvent>,
-) -> Result<Option<Project>, OpenError> {
+) -> Result<Option<LoadedProject>, OpenError> {
     let outcome = Project::open(folder, || {
         Ok(confirm(
             events,
@@ -167,8 +193,8 @@ fn load_project(
             },
         ))
     })?;
-    match outcome {
-        OpenOutcome::Ready(project) => Ok(Some(project)),
+    let project = match outcome {
+        OpenOutcome::Ready(project) => project,
         OpenOutcome::NeedsUpgrade(upgrade) => {
             let (from, to) = upgrade.versions();
             if confirm(
@@ -183,12 +209,20 @@ fn load_project(
                     ..Message::default()
                 },
             ) {
-                upgrade.apply().map(Some)
+                upgrade.apply()?
             } else {
-                Ok(None)
+                return Ok(None);
             }
         }
-        OpenOutcome::Cancelled => Ok(None),
+        OpenOutcome::Cancelled => return Ok(None),
+    };
+    match project.sync_photographs(FILE_LIST_LIMIT, || events.is_closed()) {
+        Ok(photographs) => Ok(Some(LoadedProject {
+            project,
+            photographs,
+        })),
+        Err(OpenError::ScanCancelled) => Ok(None),
+        Err(error) => Err(error),
     }
 }
 

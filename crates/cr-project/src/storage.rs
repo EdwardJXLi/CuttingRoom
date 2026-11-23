@@ -311,12 +311,12 @@ fn no_follow(options: &mut OpenOptions) {
 }
 
 #[cfg(unix)]
-fn is_link(metadata: &Metadata) -> bool {
+pub(crate) fn is_link(metadata: &Metadata) -> bool {
     metadata.is_symlink()
 }
 
 #[cfg(windows)]
-fn is_link(metadata: &Metadata) -> bool {
+pub(crate) fn is_link(metadata: &Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
     use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
 

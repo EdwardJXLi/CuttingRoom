@@ -1,4 +1,4 @@
-import { StandardTableView } from "std-widgets.slint";
+import { StandardListView } from "std-widgets.slint";
 import { ActionButton } from "action-button.slint";
 import { Message, MessageSeverity } from "message-dialog.slint";
 import { Palette } from "theme.slint";
@@ -31,6 +31,8 @@ component WorkspacePane inherits Rectangle {
 export component PhotoWorkspace inherits VerticalLayout {
     in property <WorkspaceView> view;
     in property <bool> show-inspector;
+    in property <[StandardListViewItem]> photo-files;
+    in property <string> file-list-status;
     callback message-requested(Message);
 
     private property <bool> browsing: root.view != WorkspaceView.photo;
@@ -107,14 +109,19 @@ export component PhotoWorkspace inherits VerticalLayout {
             background: Palette.canvas;
             accessible-role: main;
 
-            if root.view == WorkspaceView.list: StandardTableView {
-                width: 100%;
-                height: 100%;
-                columns: [
-                    { title: "Filename", min-width: 140px, horizontal-stretch: 1 },
-                    { title: "Captured", min-width: 100px },
-                    { title: "Status / rating", min-width: 150px },
-                ];
+            if root.browsing: VerticalLayout {
+                if root.file-list-status != "": Text {
+                    height: 38px;
+                    color: Palette.text;
+                    text: root.file-list-status;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                if root.photo-files.length > 0: StandardListView {
+                    vertical-stretch: 1;
+                    accessible-label: "Photo files";
+                    model: root.photo-files;
+                }
             }
         }
 

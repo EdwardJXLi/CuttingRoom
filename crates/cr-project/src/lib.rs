@@ -1,3 +1,5 @@
+mod inventory;
+mod scan;
 mod schema;
 mod storage;
 
@@ -14,6 +16,8 @@ use crate::{
     schema::{SCHEMA, Schema, connect, initialize, inspect, migrate},
     storage::{FileId, ProjectLock, Storage, publish},
 };
+
+pub use inventory::PhotographList;
 
 #[derive(Debug, Error)]
 pub enum OpenError {
@@ -37,6 +41,10 @@ pub enum OpenError {
     UnsupportedSchema { found: i32, supported: i32 },
     #[error("could not verify the pre-upgrade backup")]
     InvalidBackup,
+    #[error("the photo folder could not be scanned. Check that it is connected and readable")]
+    Scan(#[source] io::Error),
+    #[error("the folder scan was cancelled")]
+    ScanCancelled,
     #[error("{0}")]
     Io(#[from] io::Error),
     #[error("SQLite: {0}")]
@@ -73,6 +81,8 @@ impl PendingUpgrade {
         self.lock.lock_shared()?;
         Ok(Project {
             root: self.root,
+            storage: self.storage,
+            file_id: self.file_id,
             _lock: self.lock,
         })
     }
@@ -80,6 +90,8 @@ impl PendingUpgrade {
 
 pub struct Project {
     root: PathBuf,
+    storage: Storage,
+    file_id: FileId,
     _lock: ProjectLock,
 }
 
@@ -115,7 +127,13 @@ impl Project {
         initialize(database.path(), schema)?;
         storage.revalidate(None)?;
         publish(database, &storage.database)?;
-        Ok(OpenOutcome::Ready(Self { root, _lock: lock }))
+        let file_id = storage.database_id()?.ok_or(OpenError::ChangedStorage)?;
+        Ok(OpenOutcome::Ready(Self {
+            root,
+            storage,
+            file_id,
+            _lock: lock,
+        }))
     }
 }
 
@@ -139,7 +157,12 @@ fn open_existing(
         }))
     } else {
         tempfile::tempfile_in(&storage.directory)?;
-        Ok(OpenOutcome::Ready(Project { root, _lock: lock }))
+        Ok(OpenOutcome::Ready(Project {
+            root,
+            storage,
+            file_id: id,
+            _lock: lock,
+        }))
     }
 }
 
