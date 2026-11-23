@@ -14,6 +14,7 @@ pub enum PhotographFormat {
     JpegXl,
     Png,
     Tiff,
+    WebP,
     Heif,
     OpenExr,
     Raw,
@@ -21,13 +22,14 @@ pub enum PhotographFormat {
 
 /// Identify the decoder family from a photograph's filename extension.
 pub fn photograph_format(path: &Path) -> Option<PhotographFormat> {
-    use PhotographFormat::{Heif, Jpeg, JpegXl, OpenExr, Png, Raw, Tiff};
+    use PhotographFormat::{Heif, Jpeg, JpegXl, OpenExr, Png, Raw, Tiff, WebP};
 
     match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
         "jpeg" | "jpg" => Some(Jpeg),
         "jxl" => Some(JpegXl),
         "png" => Some(Png),
         "tif" | "tiff" => Some(Tiff),
+        "webp" => Some(WebP),
         "heic" | "heif" => Some(Heif),
         "exr" => Some(OpenExr),
         "3fr" | "arw" | "cr2" | "cr3" | "crw" | "dcr" | "dng" | "erf" | "fff" | "iiq" | "kdc"

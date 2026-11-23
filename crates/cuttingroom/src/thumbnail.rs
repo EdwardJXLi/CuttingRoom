@@ -45,7 +45,7 @@ impl Decoder {
     }
 
     pub(crate) fn load(&self, directory: &Dir, path: &Path) -> Result<Pixels, PreviewError> {
-        use PhotographFormat::{Heif, Jpeg, JpegXl, OpenExr, Png, Raw, Tiff};
+        use PhotographFormat::{Heif, Jpeg, JpegXl, OpenExr, Png, Raw, Tiff, WebP};
         use PreviewError::{DecoderUnavailable, Unavailable};
 
         let format = photograph_format(path).ok_or(Unavailable)?;
@@ -57,6 +57,7 @@ impl Decoder {
             JpegXl => decode_jpeg_xl(file).map_err(|_| Unavailable),
             Png => decode_raster(file, ImageFormat::Png).map_err(|_| Unavailable),
             Tiff => decode_raster(file, ImageFormat::Tiff).map_err(|_| Unavailable),
+            WebP => decode_raster(file, ImageFormat::WebP).map_err(|_| Unavailable),
             OpenExr => decode_raster(file, ImageFormat::OpenExr).map_err(|_| Unavailable),
             Raw => {
                 let decoder = self.raw.as_ref().ok_or(DecoderUnavailable)?;

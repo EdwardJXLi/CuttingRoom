@@ -2360,6 +2360,7 @@ dependencies = [
  "bytemuck",
  "byteorder-lite",
  "exr",
+ "image-webp",
  "moxcms",
  "num-traits",
  "png",
