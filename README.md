@@ -24,6 +24,10 @@ cargo run -p cuttingroom --locked -- "/path/to/photo folder"
 
 For software rendering, set `SLINT_BACKEND=winit-skia-software` before starting the app.
 
+For RAW thumbnails, install the LibRaw 0.22.3 shared library.
+Set `CUTTINGROOM_CODEC_DIR` to the absolute path of the directory with this library.
+By default, the app loads the library from the `codecs` directory next to the executable.
+
 ### Database development
 
 Install Diesel CLI to generate schema changes.

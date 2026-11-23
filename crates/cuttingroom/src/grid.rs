@@ -12,14 +12,14 @@ use std::{
 
 use async_channel::{Sender, bounded};
 use cap_std::fs::Dir;
-use slint::{
-    ComponentHandle, Image, Model, Rgba8Pixel, SharedPixelBuffer, Timer, VecModel,
-    language::StandardListViewItem,
+use slint::{ComponentHandle, Image, Model, Timer, VecModel, language::StandardListViewItem};
+
+use crate::{
+    GridPhoto, MainWindow, PreviewState,
+    thumbnail::{Decoder, Pixels, PreviewError},
 };
 
-use crate::{GridPhoto, MainWindow, PreviewState, thumbnail};
-
-const MAX_VISIBLE_PREVIEWS: usize = 96;
+const MAX_VISIBLE_PREVIEWS: usize = 192;
 const CACHE_MARGIN: usize = 12;
 const UPDATE_INTERVAL: Duration = Duration::from_millis(16);
 
@@ -108,8 +108,9 @@ impl GridSession {
         let worker = thread::Builder::new()
             .name("thumbnail worker".into())
             .spawn(move || {
+                let decoder = Decoder::new();
                 while let Ok(job) = requests.recv_blocking() {
-                    let result = thumbnail::load(&job.directory, &job.path);
+                    let result = decoder.load(&job.directory, &job.path);
                     if results
                         .send_blocking((job.generation, job.index, result))
                         .is_err()
@@ -212,7 +213,7 @@ impl Grid {
         window: &MainWindow,
         generation: u64,
         index: usize,
-        thumbnail: Option<SharedPixelBuffer<Rgba8Pixel>>,
+        thumbnail: Result<Pixels, PreviewError>,
     ) {
         if generation != self.generation
             || !(self.retained_range().contains(&index) || active_index(window) == Some(index))
@@ -220,12 +221,14 @@ impl Grid {
             return;
         }
         if let Some(mut photo) = self.photos.row_data(index) {
-            if let Some(pixels) = thumbnail {
-                photo.preview = Image::from_rgba8(pixels);
-                photo.state = PreviewState::Ready;
-            } else {
-                photo.state = PreviewState::Unavailable;
-            }
+            photo.state = match thumbnail {
+                Ok(pixels) => {
+                    photo.preview = Image::from_rgba8(pixels);
+                    PreviewState::Ready
+                }
+                Err(PreviewError::Unavailable) => PreviewState::Unavailable,
+                Err(PreviewError::DecoderUnavailable) => PreviewState::DecoderUnavailable,
+            };
             self.cached.insert(index);
             self.photos.set_row_data(index, photo);
         }

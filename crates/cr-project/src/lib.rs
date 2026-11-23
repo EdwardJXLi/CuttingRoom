@@ -18,6 +18,7 @@ use crate::{
 };
 
 pub use inventory::PhotographList;
+pub use scan::{PhotographFormat, photograph_format};
 
 #[derive(Debug, Error)]
 pub enum OpenError {

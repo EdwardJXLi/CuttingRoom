@@ -959,6 +959,7 @@ dependencies = [
  "cr-project",
  "image",
  "libc",
+ "libloading",
  "slint",
  "slint-build",
 ]

@@ -1,7 +1,7 @@
 import { ListView } from "std-widgets.slint";
 import { Palette } from "theme.slint";
 
-export enum PreviewState { pending, ready, unavailable }
+export enum PreviewState { pending, ready, unavailable, decoder-unavailable }
 
 export struct GridPhoto {
     name: string,
@@ -44,7 +44,9 @@ component PhotoTile inherits Rectangle {
             if root.photo.state != PreviewState.ready: Text {
                 width: parent.width;
                 height: parent.height;
-                text: root.photo.state == PreviewState.pending ? "Loading preview…" : "Preview unavailable";
+                text: root.photo.state == PreviewState.pending ? "Loading preview…"
+                    : root.photo.state == PreviewState.decoder-unavailable ? "Preview decoder unavailable"
+                    : "Preview unavailable";
                 color: Palette.muted;
                 font-size: 12px;
                 horizontal-alignment: center;

@@ -8,6 +8,31 @@ use std::{
 
 use walkdir::{DirEntry, IntoIter, WalkDir};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PhotographFormat {
+    Jpeg,
+    Png,
+    Tiff,
+    Heif,
+    Raw,
+}
+
+/// Identify the decoder family from a photograph's filename extension.
+pub fn photograph_format(path: &Path) -> Option<PhotographFormat> {
+    use PhotographFormat::{Heif, Jpeg, Png, Raw, Tiff};
+
+    match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+        "jpeg" | "jpg" => Some(Jpeg),
+        "png" => Some(Png),
+        "tif" | "tiff" => Some(Tiff),
+        "heic" | "heif" => Some(Heif),
+        "3fr" | "arw" | "cr2" | "cr3" | "crw" | "dcr" | "dng" | "erf" | "fff" | "iiq" | "kdc"
+        | "mef" | "mos" | "mrw" | "nef" | "nrw" | "orf" | "pef" | "raf" | "rw2" | "rwl" | "sr2"
+        | "srf" | "srw" | "x3f" => Some(Raw),
+        _ => None,
+    }
+}
+
 /// Scan a project root without following directory links or entering nested projects.
 ///
 /// The iterator yields errors for unreadable entries. Callers must distinguish a
@@ -46,7 +71,7 @@ fn inspect_entry(
         }
         return Ok(None);
     }
-    if !file_type.is_file() || !has_photo_extension(entry.path()) {
+    if !file_type.is_file() || photograph_format(entry.path()).is_none() {
         return Ok(None);
     }
     let metadata = entry.metadata()?;
@@ -79,30 +104,4 @@ fn is_nested_project(directory: &Path) -> io::Result<bool> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
         Err(error) => Err(error),
     }
-}
-
-fn has_photo_extension(path: &Path) -> bool {
-    path.extension()
-        .and_then(OsStr::to_str)
-        .is_some_and(|extension| {
-            matches!(
-                extension.to_ascii_lowercase().as_str(),
-                "arw"
-                    | "cr2"
-                    | "cr3"
-                    | "dng"
-                    | "heic"
-                    | "heif"
-                    | "jpeg"
-                    | "jpg"
-                    | "nef"
-                    | "orf"
-                    | "pef"
-                    | "png"
-                    | "raf"
-                    | "rw2"
-                    | "tif"
-                    | "tiff"
-            )
-        })
 }
