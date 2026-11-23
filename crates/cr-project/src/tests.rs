@@ -53,7 +53,7 @@ fn upgrades_version_one_and_keeps_photo_identity_when_the_folder_moves() -> Test
     let project = pending(&original, crate::schema::SCHEMA)?.apply()?;
     assert_eq!(fs::read(original.join(BACKUP))?, before);
     assert_eq!(
-        project.sync_photographs(10, || false)?.paths,
+        project.sync_photographs(10, || false, |_| {})?.paths,
         ["original.dng"]
     );
     drop(project);
@@ -69,7 +69,7 @@ fn upgrades_version_one_and_keeps_photo_identity_when_the_folder_moves() -> Test
     let project = ready(&moved)?;
     assert_eq!(project.root(), moved.canonicalize()?);
     assert_eq!(
-        project.sync_photographs(10, || false)?.paths,
+        project.sync_photographs(10, || false, |_| {})?.paths,
         ["original.dng"]
     );
     let db = Connection::open(moved.join(DATABASE))?;
@@ -104,7 +104,9 @@ fn rescans_photographs_and_retains_missing_records() -> TestResult {
 
     let project = ready(root)?;
     fs::write(root.join(STORAGE).join("preview.png"), b"cache")?;
-    let listing = project.sync_photographs(1, || false)?;
+    let mut found = 0;
+    let listing = project.sync_photographs(1, || false, |count| found = count)?;
+    assert_eq!(found, listing.total);
     assert_eq!(listing.total, 2);
     assert_eq!(listing.paths, [nested_path.to_string_lossy()]);
     drop(project);
@@ -119,7 +121,7 @@ fn rescans_photographs_and_retains_missing_records() -> TestResult {
     fs::remove_file(root.join("gone.dng"))?;
     fs::write(root.join(&nested_path), b"a changed jpeg")?;
     fs::write(root.join("added.HEIC"), b"new photo")?;
-    let listing = ready(root)?.sync_photographs(10, || false)?;
+    let listing = ready(root)?.sync_photographs(10, || false, |_| {})?;
     assert_eq!(listing.total, 2);
     assert_eq!(listing.paths, ["added.HEIC", nested_display]);
     assert_eq!(photo_record(&db, &nested_name)?, (nested_id, true));
@@ -131,7 +133,7 @@ fn rescans_photographs_and_retains_missing_records() -> TestResult {
     assert_eq!(fs::read(root.join(&nested_path))?, b"a changed jpeg");
 
     fs::write(root.join("gone.dng"), b"returned photo")?;
-    ready(root)?.sync_photographs(0, || false)?;
+    ready(root)?.sync_photographs(0, || false, |_| {})?;
     assert_eq!(photo_record(&db, &["gone.dng"])?, (removed_id, true));
     Ok(())
 }
@@ -143,18 +145,15 @@ fn cancelled_rescan_preserves_the_previous_inventory() -> TestResult {
     let saved = root.join("saved.jpg");
     fs::write(&saved, b"saved")?;
     let project = ready(root)?;
-    project.sync_photographs(10, || false)?;
+    project.sync_photographs(10, || false, |_| {})?;
     let before = fs::read(root.join(DATABASE))?;
     fs::remove_file(saved)?;
     for number in 0..300 {
         fs::write(root.join(format!("{number}.jpg")), b"new")?;
     }
 
-    let checks = Cell::new(0);
-    let result = project.sync_photographs(10, || {
-        checks.set(checks.get() + 1);
-        checks.get() >= 280
-    });
+    let found = Cell::new(0);
+    let result = project.sync_photographs(10, || found.get() >= 280, |count| found.set(count));
     assert!(matches!(result, Err(OpenError::ScanCancelled)));
     assert_eq!(fs::read(root.join(DATABASE))?, before);
     Ok(())
@@ -172,7 +171,7 @@ fn retains_distinct_non_unicode_names() -> TestResult {
         fs::write(folder.path().join(OsStr::from_bytes(name)), b"native")?;
     }
 
-    let listing = ready(folder.path())?.sync_photographs(10, || false)?;
+    let listing = ready(folder.path())?.sync_photographs(10, || false, |_| {})?;
     assert_eq!(listing.paths, ["IMG_�.jpg", "IMG_�.jpg"]);
     let db = Connection::open(folder.path().join(DATABASE))?;
     let mut query = db.prepare("SELECT path FROM photos ORDER BY path")?;

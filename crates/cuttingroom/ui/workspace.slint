@@ -32,7 +32,6 @@ export component PhotoWorkspace inherits VerticalLayout {
     in property <WorkspaceView> view;
     in property <bool> show-inspector;
     in property <[StandardListViewItem]> photo-files;
-    in property <string> file-list-status;
     callback message-requested(Message);
 
     private property <bool> browsing: root.view != WorkspaceView.photo;
@@ -109,19 +108,11 @@ export component PhotoWorkspace inherits VerticalLayout {
             background: Palette.canvas;
             accessible-role: main;
 
-            if root.browsing: VerticalLayout {
-                if root.file-list-status != "": Text {
-                    height: 38px;
-                    color: Palette.text;
-                    text: root.file-list-status;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                }
-                if root.photo-files.length > 0: StandardListView {
-                    vertical-stretch: 1;
-                    accessible-label: "Photo files";
-                    model: root.photo-files;
-                }
+            if root.browsing && root.photo-files.length > 0: StandardListView {
+                width: 100%;
+                height: 100%;
+                accessible-label: "Photo files";
+                model: root.photo-files;
             }
         }
 

@@ -1,11 +1,12 @@
 use std::{
-    cell::RefCell,
+    cell::Cell,
     error::Error,
     io,
     path::{Path, PathBuf},
     process::ExitCode,
     rc::Rc,
     thread,
+    time::{Duration, Instant},
 };
 
 use async_channel::{Receiver, Sender, bounded};
@@ -15,25 +16,20 @@ use slint::{ComponentHandle, ModelRc, VecModel, Weak, language::StandardListView
 use crate::{MainWindow, Message, MessageSeverity};
 
 const FILE_LIST_LIMIT: u32 = 10_000;
-
-struct LoadedProject {
-    project: Project,
-    photographs: PhotographList,
-}
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(150);
 
 enum ProjectEvent {
     Confirm(Message, Sender<bool>),
-    Finished(Result<Option<LoadedProject>, OpenError>),
+    Opened(String),
+    OpenCancelled,
+    OpenFailed(OpenError),
+    ScanProgress(i64),
+    ScanFinished(Result<PhotographList, OpenError>),
 }
 
-#[derive(Default)]
-struct WindowState {
-    project: Option<Project>,
-    initial_open_failed: bool,
-}
-
-struct ProjectOpen {
-    requests: Receiver<ProjectEvent>,
+struct ProjectSession {
+    events: Receiver<ProjectEvent>,
+    rescans: Sender<()>,
     task: slint::JoinHandle<()>,
     worker: thread::JoinHandle<()>,
 }
@@ -41,68 +37,77 @@ struct ProjectOpen {
 pub(crate) fn run(initial_folder: Option<PathBuf>) -> Result<ExitCode, Box<dyn Error>> {
     let window = MainWindow::new()?;
     window.set_app_version(env!("CARGO_PKG_VERSION").into());
-    let state = Rc::new(RefCell::new(WindowState::default()));
-    let opening = initial_folder
+    let open_failed = Rc::new(Cell::new(false));
+    let session = initial_folder
         .map(|folder| {
-            window.set_file_list_status("Loading folder…".into());
-            let state = Rc::clone(&state);
-            open_folder(&window, folder, move |window, result| {
-                finish_initial_open(window, &mut state.borrow_mut(), result);
-            })
+            window.set_status_text("Opening folder…".into());
+            start_project(&window, folder, Rc::clone(&open_failed))
         })
         .transpose()?;
 
     let result = window.run();
-    if let Some(opening) = opening {
-        opening.finish(&window)?;
+    if let Some(session) = session {
+        session.finish(&window)?;
     }
     result?;
-    if state.borrow().initial_open_failed {
+    if open_failed.get() {
         Ok(ExitCode::FAILURE)
     } else {
         Ok(ExitCode::SUCCESS)
     }
 }
 
-fn open_folder(
+fn start_project(
     window: &MainWindow,
     folder: PathBuf,
-    completed: impl FnOnce(&MainWindow, Result<Option<LoadedProject>, OpenError>) + 'static,
-) -> Result<ProjectOpen, Box<dyn Error>> {
-    let (events, requests) = bounded(1);
-    let task = slint::spawn_local(handle_events(window.as_weak(), requests.clone(), completed))?;
+    open_failed: Rc<Cell<bool>>,
+) -> Result<ProjectSession, Box<dyn Error>> {
+    let (sender, events) = bounded(1);
+    let (rescans, requests) = bounded(1);
+    let task = slint::spawn_local(handle_events(window.as_weak(), events.clone(), open_failed))?;
     let worker = thread::Builder::new()
-        .name("open project".into())
-        .spawn(move || {
-            let result = load_project(&folder, &events);
-            let _ = events.send_blocking(ProjectEvent::Finished(result));
-        })?;
-    Ok(ProjectOpen {
-        requests,
+        .name("project worker".into())
+        .spawn(move || run_project(&folder, sender, requests))?;
+
+    let weak = window.as_weak();
+    let rescan = rescans.clone();
+    window.on_rescan_folder(move || {
+        if let Some(window) = weak.upgrade()
+            && window.get_project_open()
+            && !window.get_scan_active()
+            && rescan.try_send(()).is_ok()
+        {
+            show_scan_started(&window);
+        }
+    });
+    Ok(ProjectSession {
+        events,
+        rescans,
         task,
         worker,
     })
 }
 
-impl ProjectOpen {
+impl ProjectSession {
     fn finish(self, window: &MainWindow) -> io::Result<()> {
-        self.requests.close();
+        self.events.close();
+        self.rescans.close();
         window.on_message_dismissed(|_| {});
         // Dropping an undelivered confirmation also releases its waiting worker.
-        drop(self.requests.try_recv());
+        drop(self.events.try_recv());
         self.task.abort();
         self.worker
             .join()
-            .map_err(|_| io::Error::other("project open worker failed"))
+            .map_err(|_| io::Error::other("project worker failed"))
     }
 }
 
 async fn handle_events(
     window: Weak<MainWindow>,
-    requests: Receiver<ProjectEvent>,
-    completed: impl FnOnce(&MainWindow, Result<Option<LoadedProject>, OpenError>),
+    events: Receiver<ProjectEvent>,
+    open_failed: Rc<Cell<bool>>,
 ) {
-    while let Ok(event) = requests.recv().await {
+    while let Ok(event) = events.recv().await {
         let Some(window) = window.upgrade() else {
             break;
         };
@@ -114,73 +119,135 @@ async fn handle_events(
                 });
                 window.invoke_show_message(message);
             }
-            ProjectEvent::Finished(result) => {
-                completed(&window, result);
-                break;
+            ProjectEvent::Opened(name) => {
+                window.on_message_dismissed(|_| {});
+                window.set_project_title(name.into());
+                window.set_project_open(true);
+                show_scan_started(&window);
+            }
+            ProjectEvent::OpenCancelled => {
+                let _ = window.hide();
+            }
+            ProjectEvent::OpenFailed(error) => {
+                open_failed.set(true);
+                window.set_status_text("".into());
+                let weak = window.as_weak();
+                window.on_message_dismissed(move |_| {
+                    if let Some(window) = weak.upgrade() {
+                        let _ = window.hide();
+                    }
+                });
+                show_error(&window, "Could not open project", &error);
+            }
+            ProjectEvent::ScanProgress(found) => {
+                window.set_status_text(
+                    format!("Scanning folder… {} found", photo_count(found)).into(),
+                );
+            }
+            ProjectEvent::ScanFinished(result) => {
+                window.set_scan_active(false);
+                match result {
+                    Ok(photos) => show_photos(&window, photos),
+                    Err(error) => {
+                        window.set_status_text("Folder scan failed".into());
+                        show_error(&window, "Could not scan folder", &error);
+                    }
+                }
             }
         }
     }
 }
 
-fn finish_initial_open(
-    window: &MainWindow,
-    state: &mut WindowState,
-    result: Result<Option<LoadedProject>, OpenError>,
-) {
-    window.set_file_list_status("".into());
-    match result {
-        Ok(Some(LoadedProject {
-            project,
-            photographs,
-        })) => {
-            let root = project.root();
-            let name = root
-                .file_name()
-                .unwrap_or(root.as_os_str())
-                .to_string_lossy();
-            window.set_project_title(name.as_ref().into());
-            let status = match photographs.total {
-                0 => "No photos found".into(),
-                total if total > i64::from(FILE_LIST_LIMIT) => {
-                    format!("Showing {FILE_LIST_LIMIT} of {total} photos").into()
-                }
-                _ => "".into(),
-            };
-            let rows: Vec<_> = photographs
-                .paths
-                .into_iter()
-                .map(|path| StandardListViewItem::from(path.as_str()))
-                .collect();
-            window.set_photo_files(ModelRc::new(VecModel::from(rows)));
-            window.set_file_list_status(status);
-            state.project = Some(project);
+fn show_scan_started(window: &MainWindow) {
+    window.set_status_text("Scanning folder…".into());
+    window.set_scan_active(true);
+}
+
+fn show_photos(window: &MainWindow, photographs: PhotographList) {
+    let status = match photographs.total {
+        0 => "No photos found".to_owned(),
+        total if total > i64::from(FILE_LIST_LIMIT) => {
+            format!("Showing {FILE_LIST_LIMIT} of {total} photos")
         }
+        total => photo_count(total),
+    };
+    let rows: Vec<_> = photographs
+        .paths
+        .into_iter()
+        .map(|path| StandardListViewItem::from(path.as_str()))
+        .collect();
+    window.set_photo_files(ModelRc::new(VecModel::from(rows)));
+    window.set_status_text(status.into());
+}
+
+fn photo_count(count: i64) -> String {
+    if count == 1 {
+        "1 photo".to_owned()
+    } else {
+        format!("{count} photos")
+    }
+}
+
+fn show_error(window: &MainWindow, heading: &str, error: &OpenError) {
+    eprintln!("CuttingRoom: {heading}. {error}");
+    window.invoke_show_message(Message {
+        severity: MessageSeverity::Error,
+        heading: heading.into(),
+        text: error.to_string().into(),
+        ..Message::default()
+    });
+}
+
+fn run_project(folder: &Path, events: Sender<ProjectEvent>, rescans: Receiver<()>) {
+    let project = match open_project(folder, &events) {
+        Ok(Some(project)) => project,
         Ok(None) => {
-            let _ = window.hide();
+            let _ = events.send_blocking(ProjectEvent::OpenCancelled);
+            return;
         }
         Err(error) => {
-            state.initial_open_failed = true;
-            eprintln!("CuttingRoom could not open the project. {error}");
-            let weak = window.as_weak();
-            window.on_message_dismissed(move |_| {
-                if let Some(window) = weak.upgrade() {
-                    let _ = window.hide();
+            let _ = events.send_blocking(ProjectEvent::OpenFailed(error));
+            return;
+        }
+    };
+    let root = project.root();
+    let name = root
+        .file_name()
+        .unwrap_or(root.as_os_str())
+        .to_string_lossy();
+    if events
+        .send_blocking(ProjectEvent::Opened(name.into_owned()))
+        .is_err()
+    {
+        return;
+    }
+
+    while !events.is_closed() {
+        let mut last_progress = Instant::now();
+        let result = project.sync_photographs(
+            FILE_LIST_LIMIT,
+            || events.is_closed(),
+            |found| {
+                if last_progress.elapsed() >= PROGRESS_INTERVAL {
+                    let _ = events.try_send(ProjectEvent::ScanProgress(found));
+                    last_progress = Instant::now();
                 }
-            });
-            window.invoke_show_message(Message {
-                severity: MessageSeverity::Error,
-                heading: "Could not open project".into(),
-                text: error.to_string().into(),
-                ..Message::default()
-            });
+            },
+        );
+        if events
+            .send_blocking(ProjectEvent::ScanFinished(result))
+            .is_err()
+            || rescans.recv_blocking().is_err()
+        {
+            break;
         }
     }
 }
 
-fn load_project(
+fn open_project(
     folder: &Path,
     events: &Sender<ProjectEvent>,
-) -> Result<Option<LoadedProject>, OpenError> {
+) -> Result<Option<Project>, OpenError> {
     let outcome = Project::open(folder, || {
         Ok(confirm(
             events,
@@ -193,8 +260,8 @@ fn load_project(
             },
         ))
     })?;
-    let project = match outcome {
-        OpenOutcome::Ready(project) => project,
+    match outcome {
+        OpenOutcome::Ready(project) => Ok(Some(project)),
         OpenOutcome::NeedsUpgrade(upgrade) => {
             let (from, to) = upgrade.versions();
             if confirm(
@@ -209,20 +276,12 @@ fn load_project(
                     ..Message::default()
                 },
             ) {
-                upgrade.apply()?
+                upgrade.apply().map(Some)
             } else {
-                return Ok(None);
+                Ok(None)
             }
         }
-        OpenOutcome::Cancelled => return Ok(None),
-    };
-    match project.sync_photographs(FILE_LIST_LIMIT, || events.is_closed()) {
-        Ok(photographs) => Ok(Some(LoadedProject {
-            project,
-            photographs,
-        })),
-        Err(OpenError::ScanCancelled) => Ok(None),
-        Err(error) => Err(error),
+        OpenOutcome::Cancelled => Ok(None),
     }
 }
 

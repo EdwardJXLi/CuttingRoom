@@ -1,0 +1,21 @@
+import { Palette } from "theme.slint";
+
+export component BottomBar inherits VerticalLayout {
+    spacing: 0px;
+    vertical-stretch: 0;
+
+    Rectangle { height: 1px; background: Palette.line; }
+
+    Rectangle {
+        height: max(30px, content.preferred-height);
+        background: Palette.panel;
+
+        content := HorizontalLayout {
+            padding-left: 14px;
+            padding-right: 14px;
+            spacing: 12px;
+
+            @children
+        }
+    }
+}

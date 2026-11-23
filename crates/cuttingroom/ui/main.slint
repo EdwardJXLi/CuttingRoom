@@ -1,4 +1,6 @@
 import { AboutPopup } from "about.slint";
+import { ProgressIndicator } from "std-widgets.slint";
+import { BottomBar } from "bottom-bar.slint";
 import { Message, MessageDialog, MessageSeverity } from "message-dialog.slint";
 import { Palette } from "theme.slint";
 import { WorkspaceHeader, WorkspaceView } from "workspace-header.slint";
@@ -22,7 +24,10 @@ export component MainWindow inherits Window {
     in property <string> app-version;
     in property <string> project-title: "No project open";
     in property <[StandardListViewItem]> photo-files;
-    in property <string> file-list-status;
+    in property <string> status-text;
+    in property <bool> project-open;
+    in property <bool> scan-active;
+    callback rescan-folder();
     callback message-dismissed(accepted: bool);
     private property <WorkspaceView> view: WorkspaceView.grid;
     private property <bool> show-inspector: true;
@@ -53,6 +58,12 @@ export component MainWindow inherits Window {
         }
         Menu {
             title: "File";
+            MenuItem {
+                title: "Rescan Folder";
+                shortcut: @keys(Control + R);
+                enabled: root.project-open && !root.scan-active && !message-dialog.is-open;
+                activated => { root.rescan-folder(); }
+            }
             MenuItem { title: "Export Metadata"; enabled: false; }
             MenuSeparator {}
             MenuItem {
@@ -103,8 +114,29 @@ export component MainWindow inherits Window {
             view: root.view;
             show-inspector: root.show-inspector;
             photo-files: root.photo-files;
-            file-list-status: root.file-list-status;
             message-requested(message) => { root.show-message(message); }
+        }
+        BottomBar {
+            Text {
+                text: root.status-text;
+                color: Palette.muted;
+                font-size: 12px;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+            }
+
+            if root.scan-active: Rectangle {
+                width: 144px;
+
+                ProgressIndicator {
+                    width: 100%;
+                    height: 5px;
+                    y: (parent.height - self.height) / 2;
+                    indeterminate: true;
+                    accessible-label: "Folder scan";
+                }
+            }
         }
     }
 

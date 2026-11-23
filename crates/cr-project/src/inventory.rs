@@ -32,12 +32,14 @@ pub struct PhotographList {
 impl Project {
     /// Reconcile the inventory against a fresh folder scan on a blocking worker.
     ///
+    /// Report the number of photos observed so far through `progress`.
     /// Return up to `list_limit` available paths after commit. Cancelled and failed
     /// scans preserve the previous inventory.
     pub fn sync_photographs(
         &self,
         list_limit: u32,
         cancelled: impl Fn() -> bool,
+        progress: impl FnMut(i64),
     ) -> Result<PhotographList, OpenError> {
         self.storage
             .check_database_header(self.file_id, SCHEMA.version)?;
@@ -52,7 +54,7 @@ impl Project {
             diesel::update(photos::table.filter(photos::present.eq(true)))
                 .set(photos::present.eq(false))
                 .execute(db)?;
-            let listing = self.record_photographs(db, list_limit as usize, &cancelled)?;
+            let listing = self.record_photographs(db, list_limit as usize, &cancelled, progress)?;
             self.storage.revalidate(Some(self.file_id))?;
             if cancelled() {
                 return Err(OpenError::ScanCancelled);
@@ -66,6 +68,7 @@ impl Project {
         db: &mut SqliteConnection,
         list_limit: usize,
         cancelled: impl Fn() -> bool,
+        mut progress: impl FnMut(i64),
     ) -> Result<PhotographList, OpenError> {
         let mut batch = Vec::with_capacity(BATCH_SIZE);
         let mut paths = BinaryHeap::new();
@@ -81,6 +84,7 @@ impl Project {
                 batch.clear();
             }
             total += 1;
+            progress(total);
             let display_path = path.to_string_lossy();
             if paths.len() < list_limit {
                 paths.push(display_path.into_owned());
