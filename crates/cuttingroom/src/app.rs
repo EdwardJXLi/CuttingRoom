@@ -11,9 +11,9 @@ use std::{
 
 use async_channel::{Receiver, Sender, bounded};
 use cr_project::{OpenError, OpenOutcome, PhotographList, Project};
-use slint::{ComponentHandle, ModelRc, VecModel, Weak, language::StandardListViewItem};
+use slint::{ComponentHandle, Model, ModelRc, VecModel, Weak, language::StandardListViewItem};
 
-use crate::{MainWindow, Message, MessageSeverity};
+use crate::{GridPhoto, MainWindow, Message, MessageSeverity};
 
 const FILE_LIST_LIMIT: u32 = 10_000;
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(150);
@@ -171,12 +171,46 @@ fn show_photos(window: &MainWindow, photographs: PhotographList) {
         }
         total => photo_count(total),
     };
+    let active_path = usize::try_from(window.get_active_index())
+        .ok()
+        .and_then(|index| window.get_grid_photos().row_data(index))
+        .map(|photo| photo.relative_path);
+    let grid: Vec<_> = photographs
+        .paths
+        .iter()
+        .map(|relative_path| {
+            let path = Path::new(relative_path);
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(relative_path);
+            let extension = path
+                .extension()
+                .and_then(|part| part.to_str())
+                .unwrap_or_default();
+            let format = match extension.to_ascii_uppercase().as_str() {
+                "JPG" => "JPEG".into(),
+                "TIF" => "TIFF".into(),
+                format => format.into(),
+            };
+            GridPhoto {
+                name: name.into(),
+                relative_path: relative_path.as_str().into(),
+                format,
+            }
+        })
+        .collect();
+    let active = active_path
+        .and_then(|path| grid.iter().position(|photo| photo.relative_path == path))
+        .map_or(if grid.is_empty() { -1 } else { 0 }, |index| index as i32);
     let rows: Vec<_> = photographs
         .paths
-        .into_iter()
+        .iter()
         .map(|path| StandardListViewItem::from(path.as_str()))
         .collect();
+    window.set_grid_photos(ModelRc::new(VecModel::from(grid)));
     window.set_photo_files(ModelRc::new(VecModel::from(rows)));
+    window.set_active_index(active);
     window.set_status_text(status.into());
 }
 

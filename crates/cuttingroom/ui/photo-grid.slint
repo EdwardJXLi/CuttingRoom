@@ -1,0 +1,128 @@
+import { ListView } from "std-widgets.slint";
+import { Palette } from "theme.slint";
+
+export struct GridPhoto {
+    name: string,
+    relative-path: string,
+    format: string,
+}
+
+component PhotoTile inherits Rectangle {
+    in property <GridPhoto> photo;
+    in property <bool> active;
+    callback activated();
+
+    background: root.active ? Palette.hover : Palette.panel;
+    border-width: root.active ? 2px : 1px;
+    border-color: root.active ? Palette.text : Palette.line;
+    accessible-role: button;
+    accessible-label: root.photo.relative-path;
+    accessible-description: root.active ? "Active photo" : "";
+    accessible-action-default => { root.activated(); }
+
+    VerticalLayout {
+        padding: 7px;
+        spacing: 5px;
+
+        Rectangle {
+            background: Palette.canvas;
+            clip: true;
+            vertical-stretch: 1;
+
+            Rectangle {
+                x: 5px;
+                y: 5px;
+                width: format-label.preferred-width + 8px;
+                height: 19px;
+                background: #141414da;
+
+                format-label := Text {
+                    text: root.photo.format;
+                    color: Palette.text;
+                    font-size: 12px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    accessible-role: none;
+                }
+            }
+        }
+
+        Text {
+            text: root.photo.name;
+            color: Palette.text;
+            height: 24px;
+            vertical-alignment: center;
+            overflow: elide;
+            accessible-role: none;
+        }
+    }
+
+    TouchArea {
+        clicked => { root.activated(); }
+    }
+}
+
+export component PhotoGrid inherits Rectangle {
+    in property <[GridPhoto]> photos;
+    in-out property <int> active-index: -1;
+
+    private property <int> columns: max(2, floor(scroll.visible-width / 280px));
+    private property <int> row-count: ceil(root.photos.length / root.columns);
+    private property <length> gap: 10px;
+    private property <length> tile-width: (scroll.visible-width - 24px - (root.columns - 1) * root.gap) / root.columns;
+    private property <length> tile-height: min(root.tile-width * 0.69, root.tile-width * 0.55 + 19px) + 72px;
+    private property <length> row-height: root.tile-height + root.gap;
+    forward-focus: keyboard;
+
+    function activate(index: int) {
+        root.active-index = index;
+        keyboard.focus();
+    }
+
+    keyboard := FocusScope {
+        focus-on-click: false;
+        key-pressed(event) => {
+            if root.photos.length == 0 || event.modifiers.control || event.modifiers.alt || event.modifiers.shift || event.modifiers.meta {
+                return reject;
+            }
+            let key = event.text;
+            let step = key == Key.LeftArrow ? -1
+                : key == Key.RightArrow ? 1
+                : key == Key.UpArrow ? -root.columns
+                : key == Key.DownArrow ? root.columns : 0;
+            if step == 0 { return reject; }
+            root.active-index = max(0, min(root.photos.length - 1, root.active-index + step));
+            scroll.ensure-row-visible(floor(root.active-index / root.columns), ScrollBehavior.instant);
+            return accept;
+        }
+    }
+
+    scroll := ListView {
+        y: 8px;
+        width: parent.width;
+        height: parent.height - self.y;
+        horizontal-scrollbar-policy: always-off;
+        accessible-label: "Photo grid";
+
+        for row in root.row-count: Rectangle {
+            width: scroll.visible-width;
+            height: root.row-height;
+
+            for column in min(root.columns, root.photos.length - row * root.columns): PhotoTile {
+                private property <int> photo-index: row * root.columns + column;
+                x: 16px + column * (root.tile-width + root.gap);
+                y: 8px;
+                width: root.tile-width;
+                height: root.tile-height;
+                photo: root.photos[self.photo-index];
+                active: root.active-index == self.photo-index;
+                activated => { root.activate(self.photo-index); }
+            }
+        }
+    }
+
+    if keyboard.has-focus && root.photos.length > 0: Rectangle {
+        border-width: 1px;
+        border-color: Palette.focus;
+    }
+}

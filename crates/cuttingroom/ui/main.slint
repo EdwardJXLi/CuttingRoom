@@ -2,11 +2,12 @@ import { AboutPopup } from "about.slint";
 import { ProgressIndicator } from "std-widgets.slint";
 import { BottomBar } from "bottom-bar.slint";
 import { Message, MessageDialog, MessageSeverity } from "message-dialog.slint";
+import { GridPhoto } from "photo-grid.slint";
 import { Palette } from "theme.slint";
 import { WorkspaceHeader, WorkspaceView } from "workspace-header.slint";
 import { PhotoWorkspace } from "workspace.slint";
 
-export { Message, MessageSeverity }
+export { GridPhoto, Message, MessageSeverity }
 
 import "assets/fonts/NotoSans-Regular.ttf";
 import "assets/fonts/NotoSans-SemiBold.ttf";
@@ -24,6 +25,8 @@ export component MainWindow inherits Window {
     in property <string> app-version;
     in property <string> project-title: "No project open";
     in property <[StandardListViewItem]> photo-files;
+    in property <[GridPhoto]> grid-photos;
+    in-out property <int> active-index: -1;
     in property <string> status-text;
     in property <bool> project-open;
     in property <bool> scan-active;
@@ -114,6 +117,8 @@ export component MainWindow inherits Window {
             view: root.view;
             show-inspector: root.show-inspector;
             photo-files: root.photo-files;
+            grid-photos: root.grid-photos;
+            active-index <=> root.active-index;
             message-requested(message) => { root.show-message(message); }
         }
         BottomBar {

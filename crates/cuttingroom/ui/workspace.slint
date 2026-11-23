@@ -1,6 +1,7 @@
 import { StandardListView } from "std-widgets.slint";
 import { ActionButton } from "action-button.slint";
 import { Message, MessageSeverity } from "message-dialog.slint";
+import { GridPhoto, PhotoGrid } from "photo-grid.slint";
 import { Palette } from "theme.slint";
 import { ResizeHandle } from "resize-handle.slint";
 import { WorkspaceView } from "workspace-header.slint";
@@ -32,6 +33,8 @@ export component PhotoWorkspace inherits VerticalLayout {
     in property <WorkspaceView> view;
     in property <bool> show-inspector;
     in property <[StandardListViewItem]> photo-files;
+    in property <[GridPhoto]> grid-photos;
+    in-out property <int> active-index: -1;
     callback message-requested(Message);
 
     private property <bool> browsing: root.view != WorkspaceView.photo;
@@ -108,11 +111,17 @@ export component PhotoWorkspace inherits VerticalLayout {
             background: Palette.canvas;
             accessible-role: main;
 
-            if root.browsing && root.photo-files.length > 0: StandardListView {
+            if root.view == WorkspaceView.grid: PhotoGrid {
+                photos: root.grid-photos;
+                active-index <=> root.active-index;
+            }
+
+            if root.view == WorkspaceView.list && root.photo-files.length > 0: StandardListView {
                 width: 100%;
                 height: 100%;
                 accessible-label: "Photo files";
                 model: root.photo-files;
+                current-item <=> root.active-index;
             }
         }
 
