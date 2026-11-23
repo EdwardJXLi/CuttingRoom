@@ -8,7 +8,7 @@ publish = false
 async-channel = "=2.5.0"
 cap-std = "=4.0.3"
 cr-project = { path = "../cr-project" }
-image = { version = "=0.25.10", default-features = false, features = ["jpeg", "png", "tiff"] }
+image = { version = "=0.25.10", default-features = false, features = ["exr", "jpeg", "png", "tiff"] }
 jxl-image-rs-integration = "=0.8.0"
 libloading = "=0.8.9"
 slint = { version = "=1.19.0", default-features = false, features = [
