@@ -27,6 +27,7 @@ const MAX_IMAGE_EDGE: u32 = 16_384;
 const MAX_DECODE_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_SOURCE_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_EXIF_BYTES: usize = 1024 * 1024;
+const MAX_PHOTO_PIXELS: u32 = 32_000_000;
 
 #[derive(Clone, Copy)]
 pub(crate) enum DecodeError {
@@ -44,8 +45,7 @@ impl PreviewSize {
     pub(crate) fn max_edge(self) -> u32 {
         match self {
             Self::Thumbnail => 384,
-            // A square RGBA8 preview fits within the 16 MiB frame upload budget.
-            Self::Photo => 2048,
+            Self::Photo => 8192,
         }
     }
 }
@@ -69,14 +69,27 @@ impl DecodedImage {
         }
     }
 
-    /// Prepare display pixels, with an optional bound on the longest edge.
-    pub(crate) fn into_display_rgba8(self, max_edge: Option<u32>) -> image::ImageResult<RgbaImage> {
+    pub(crate) fn into_display_rgba8(
+        self,
+        size: Option<PreviewSize>,
+    ) -> image::ImageResult<RgbaImage> {
         let mut pixels = self.pixels;
         let color_space = pixels.color_space();
-        if let Some(edge) = max_edge
-            && pixels.width().max(pixels.height()) > edge
-        {
-            pixels = pixels.thumbnail(edge, edge);
+        let (width, height) = (pixels.width(), pixels.height());
+        match size {
+            Some(PreviewSize::Thumbnail) => {
+                let edge = PreviewSize::Thumbnail.max_edge();
+                if width.max(height) > edge {
+                    pixels = pixels.thumbnail(edge, edge);
+                }
+            }
+            Some(PreviewSize::Photo) => {
+                let dimensions = photo_display_dimensions(width, height);
+                if dimensions != (width, height) {
+                    pixels = pixels.thumbnail_exact(dimensions.0, dimensions.1);
+                }
+            }
+            None => (),
         }
         pixels.apply_orientation(self.orientation);
         if self.premultiplied_alpha
@@ -96,6 +109,18 @@ impl DecodedImage {
         }
         Ok(pixels.into_rgba8())
     }
+}
+
+fn photo_display_dimensions(width: u32, height: u32) -> (u32, u32) {
+    let pixel_count = f64::from(width) * f64::from(height);
+    let edge_scale = f64::from(PreviewSize::Photo.max_edge()) / f64::from(width.max(height));
+    let pixel_scale = (f64::from(MAX_PHOTO_PIXELS) / pixel_count).sqrt();
+    let scale = edge_scale.min(pixel_scale);
+    if scale >= 1.0 {
+        return (width, height);
+    }
+    let scale_dimension = |dimension| ((f64::from(dimension) * scale) as u32).max(1);
+    (scale_dimension(width), scale_dimension(height))
 }
 
 pub(crate) struct Decoder {
@@ -300,4 +325,15 @@ fn decode_image(mut decoder: impl ImageDecoder) -> image::ImageResult<DecodedIma
         source_dimensions: (width, height),
         metadata,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::photo_display_dimensions;
+
+    #[test]
+    fn photo_resolution_preserves_detail_within_the_pixel_budget() {
+        assert_eq!(photo_display_dimensions(4000, 6000), (4000, 6000));
+        assert_eq!(photo_display_dimensions(8000, 8000), (5656, 5656));
+    }
 }
