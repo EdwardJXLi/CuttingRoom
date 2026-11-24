@@ -657,6 +657,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "cap-fs-ext"
+version = "4.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "56ff379b70af8e08307a8f65e7040c7301cb4a572538ade16b4984f0da77847f"
+dependencies = [
+ "cap-primitives",
+ "cap-std",
+ "io-lifetimes 3.0.1",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "cap-primitives"
 version = "4.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -973,6 +985,7 @@ name = "cuttingroom"
 version = "0.1.0"
 dependencies = [
  "async-channel",
+ "cap-fs-ext",
  "cap-std",
  "chrono",
  "cr-project",
@@ -986,6 +999,8 @@ dependencies = [
  "objc2-image-io",
  "slint",
  "slint-build",
+ "tempfile",
+ "xmp_toolkit",
 ]
 
 [[package]]
@@ -1510,6 +1525,12 @@ dependencies = [
  "rustix 1.1.6",
  "windows-sys 0.59.0",
 ]
+
+[[package]]
+name = "fs_extra"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42703706b716c37f96a77aea830392ad231f44c9e9a67872fa5548707e11b11c"
 
 [[package]]
 name = "futures"
@@ -5850,6 +5871,18 @@ name = "xmlwriter"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
+
+[[package]]
+name = "xmp_toolkit"
+version = "1.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04517ad6f440d16e52ade0ad6d781029313bdacaac4590de9a9114f8d737af61"
+dependencies = [
+ "cc",
+ "fs_extra",
+ "num_enum",
+ "thiserror 2.0.21",
+]
 
 [[package]]
 name = "yazi"

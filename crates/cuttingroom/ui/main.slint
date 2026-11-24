@@ -3,12 +3,12 @@ import { ProgressIndicator } from "std-widgets.slint";
 import { BottomBar } from "bottom-bar.slint";
 import { Message, MessageDialog, MessageSeverity } from "message-dialog.slint";
 import { FullPreview } from "photo-canvas.slint";
-import { GridPhoto, MetadataEntry, PhotoMetadata, PreviewState } from "photo-grid.slint";
+import { GridPhoto, GroupDetails, MetadataEntry, MetadataFile, PhotoMetadata, PreviewState } from "photo-grid.slint";
 import { Palette } from "theme.slint";
 import { WorkspaceHeader, WorkspaceView } from "workspace-header.slint";
 import { PhotoWorkspace } from "workspace.slint";
 
-export { FullPreview, GridPhoto, MetadataEntry, PhotoMetadata, PreviewState, Message, MessageSeverity }
+export { FullPreview, GridPhoto, GroupDetails, MetadataEntry, MetadataFile, PhotoMetadata, PreviewState, Message, MessageSeverity }
 
 import "assets/fonts/NotoSans-Regular.ttf";
 import "assets/fonts/NotoSans-SemiBold.ttf";
@@ -28,6 +28,8 @@ export component MainWindow inherits Window {
     in property <[StandardListViewItem]> photo-files;
     in property <[GridPhoto]> grid-photos;
     in property <FullPreview> full-preview: { index: -1 };
+    in property <GroupDetails> group-details: { index: -1 };
+    out property <bool> metadata-details-visible: workspace.metadata-details-visible;
     in-out property <int> active-index: -1;
     out property <bool> photo-view-active: root.view == WorkspaceView.photo;
     in property <string> status-text;
@@ -68,6 +70,7 @@ export component MainWindow inherits Window {
     changed show-inspector => {
         if !root.show-inspector { navigation.focus(); }
     }
+    changed metadata-details-visible => { root.active-photo-changed(); }
 
     public function show-message(message: Message) {
         root.current-message = message;
@@ -185,6 +188,7 @@ export component MainWindow inherits Window {
                 photo-files: root.photo-files;
                 grid-photos: root.grid-photos;
                 full-preview: root.full-preview;
+                group-details: root.group-details;
                 active-index <=> root.active-index;
                 grid-viewport-changed(first, end) => { root.grid-viewport-changed(first, end); }
                 open-photo => { root.view = WorkspaceView.photo; }

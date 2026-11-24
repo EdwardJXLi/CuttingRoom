@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 async-channel = "=2.5.0"
+cap-fs-ext = "=4.0.3"
 cap-std = "=4.0.3"
 chrono = "=0.4.45"
 cr-project = { path = "../cr-project" }
@@ -19,6 +20,7 @@ slint = { version = "=1.19.0", default-features = false, features = [
     "compat-1-18",
     "renderer-skia",
 ] }
+xmp_toolkit = "=1.12.1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "=0.2.191"
@@ -30,3 +32,6 @@ objc2-image-io = { version = "=0.3.2", default-features = false, features = ["CG
 
 [build-dependencies]
 slint-build = "=1.19.0"
+
+[dev-dependencies]
+tempfile = "=3.27.0"

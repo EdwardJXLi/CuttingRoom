@@ -3,7 +3,7 @@ use std::{
     path::Path,
 };
 
-use cap_std::fs::{Dir, File, OpenOptions};
+use cap_std::fs::{Dir, File};
 use cr_project::PhotographFormat;
 use image::{
     DynamicImage, ImageDecoder, ImageFormat, ImageReader, Limits, Rgba, RgbaImage,
@@ -12,7 +12,8 @@ use image::{
 };
 use jxl_image_rs_integration::JxlDecoder;
 
-use crate::metadata::{self, Metadata};
+use crate::metadata::{self, Fields, Metadata, add_dimensions};
+use crate::source_file;
 
 mod heif;
 #[cfg(target_os = "macos")]
@@ -101,24 +102,67 @@ impl Decoder {
         use DecodeError::Unavailable;
         use PhotographFormat::{Avif, Heif, Jpeg, JpegXl, OpenExr, Png, Raw, Tiff, WebP};
 
-        let file = open_source(directory, path).ok_or(Unavailable)?;
+        let file = source_file::open(directory, path, MAX_SOURCE_BYTES).ok_or(Unavailable)?;
         match format {
             Jpeg => decode_jpeg(BufReader::new(file).take(MAX_SOURCE_BYTES)),
-            JpegXl => decode_jpeg_xl(file),
-            Png => decode_raster(BufReader::new(file), ImageFormat::Png),
+            JpegXl => jpeg_xl_decoder(file).and_then(decode_image),
+            Png | WebP | OpenExr => decode_raster(BufReader::new(file), raster_format(format)),
             Tiff => {
-                let bytes = read_source(file).ok_or(Unavailable)?;
+                let bytes = source_file::read(file, MAX_SOURCE_BYTES).ok_or(Unavailable)?;
                 let mut image = decode_raster(Cursor::new(&bytes), ImageFormat::Tiff)
                     .map_err(|_| Unavailable)?;
                 image.metadata = metadata::read_exif(bytes);
                 return Ok(image);
             }
-            WebP => decode_raster(BufReader::new(file), ImageFormat::WebP),
-            OpenExr => decode_raster(BufReader::new(file), ImageFormat::OpenExr),
             Avif | Heif => return self.heif(file, max_edge),
             Raw => return Err(Unavailable),
         }
         .map_err(|_| Unavailable)
+    }
+
+    pub(crate) fn inspect(
+        &self,
+        directory: &Dir,
+        path: &Path,
+        format: PhotographFormat,
+    ) -> Result<Fields, DecodeError> {
+        use DecodeError::Unavailable;
+        use PhotographFormat::{Avif, Heif, Jpeg, JpegXl, OpenExr, Png, Raw, Tiff, WebP};
+
+        let file = source_file::open(directory, path, MAX_SOURCE_BYTES).ok_or(Unavailable)?;
+        match format {
+            Raw => {
+                let bytes = source_file::read(file, MAX_SOURCE_BYTES).ok_or(Unavailable)?;
+                let raw = self.raw(&bytes)?;
+                let mut fields = raw.metadata().details;
+                if let Some(dimensions) = raw.dimensions() {
+                    add_dimensions(&mut fields, dimensions);
+                }
+                Ok(fields)
+            }
+            Tiff => {
+                let bytes = source_file::read(file, MAX_SOURCE_BYTES).ok_or(Unavailable)?;
+                let dimensions = ImageReader::with_format(Cursor::new(&bytes), ImageFormat::Tiff)
+                    .into_dimensions()
+                    .map_err(|_| Unavailable)?;
+                let mut fields = metadata::read_exif(bytes).details;
+                add_dimensions(&mut fields, dimensions);
+                Ok(fields)
+            }
+            Avif | Heif => {
+                let bytes = source_file::read(file, MAX_SOURCE_BYTES).ok_or(Unavailable)?;
+                Ok(metadata::read_container(&bytes).details)
+            }
+            Jpeg => JpegDecoder::new(BufReader::new(file).take(MAX_SOURCE_BYTES))
+                .map(inspect_decoder)
+                .map_err(|_| Unavailable),
+            JpegXl => jpeg_xl_decoder(file)
+                .map(inspect_decoder)
+                .map_err(|_| Unavailable),
+            Png | WebP | OpenExr => raster_decoder(BufReader::new(file), raster_format(format))
+                .map(inspect_decoder)
+                .map_err(|_| Unavailable),
+        }
     }
 
     fn heif(&self, file: File, max_edge: Option<u32>) -> Result<DecodedImage, DecodeError> {
@@ -129,7 +173,7 @@ impl Decoder {
         if !cfg!(target_os = "macos") && self.heif.is_none() {
             return Err(DecoderUnavailable);
         }
-        let bytes = read_source(file).ok_or(Unavailable)?;
+        let bytes = source_file::read(file, MAX_SOURCE_BYTES).ok_or(Unavailable)?;
         #[cfg(target_os = "macos")]
         if let Some(mut image) = image_io::decode(&bytes, max_edge.unwrap_or(MAX_IMAGE_EDGE))
             .map_err(|()| Unavailable)?
@@ -154,29 +198,10 @@ impl Decoder {
 }
 
 pub(crate) fn read_image_file(directory: &Dir, path: &Path) -> Option<Vec<u8>> {
-    read_source(open_source(directory, path)?)
-}
-
-fn open_source(directory: &Dir, path: &Path) -> Option<File> {
-    let mut options = OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use cap_std::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    }
-
-    let file = directory.open_with(path, &options).ok()?;
-    let metadata = file.metadata().ok()?;
-    (metadata.is_file() && metadata.len() <= MAX_SOURCE_BYTES).then_some(file)
-}
-
-fn read_source(file: File) -> Option<Vec<u8>> {
-    let mut bytes = Vec::new();
-    file.take(MAX_SOURCE_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .ok()?;
-    (bytes.len() as u64 <= MAX_SOURCE_BYTES).then_some(bytes)
+    source_file::read(
+        source_file::open(directory, path, MAX_SOURCE_BYTES)?,
+        MAX_SOURCE_BYTES,
+    )
 }
 
 fn limits() -> Limits {
@@ -193,19 +218,35 @@ pub(super) fn decode_jpeg(reader: impl BufRead + Seek) -> image::ImageResult<Dec
     decode_image(decoder)
 }
 
-fn decode_jpeg_xl(file: File) -> image::ImageResult<DecodedImage> {
+fn jpeg_xl_decoder(file: File) -> image::ImageResult<impl ImageDecoder> {
     let mut decoder = JxlDecoder::new(file.take(MAX_SOURCE_BYTES))?;
     decoder.set_limits(limits())?;
-    decode_image(decoder)
+    Ok(decoder)
+}
+
+fn raster_format(format: PhotographFormat) -> ImageFormat {
+    match format {
+        PhotographFormat::Png => ImageFormat::Png,
+        PhotographFormat::WebP => ImageFormat::WebP,
+        PhotographFormat::OpenExr => ImageFormat::OpenExr,
+        _ => unreachable!("format handled by its own decoder"),
+    }
+}
+
+fn raster_decoder<'a>(
+    reader: impl BufRead + Seek + 'a,
+    format: ImageFormat,
+) -> image::ImageResult<impl ImageDecoder + 'a> {
+    let mut reader = ImageReader::with_format(reader, format);
+    reader.limits(limits());
+    reader.into_decoder()
 }
 
 pub(super) fn decode_raster(
     reader: impl BufRead + Seek,
     format: ImageFormat,
 ) -> image::ImageResult<DecodedImage> {
-    let mut reader = ImageReader::with_format(reader, format);
-    reader.limits(limits());
-    let mut image = decode_image(reader.into_decoder()?)?;
+    let mut image = decode_image(raster_decoder(reader, format)?)?;
     if format == ImageFormat::OpenExr {
         // The decoder returns linear samples and does not expose the file's chromaticities.
         image.pixels.set_color_space(Cicp::SRGB_LINEAR)?;
@@ -220,6 +261,21 @@ fn valid_dimensions(width: u32, height: u32) -> bool {
         && u64::from(width) * u64::from(height) * 4 <= MAX_DECODE_BYTES
 }
 
+fn decoder_metadata(decoder: &mut impl ImageDecoder) -> Metadata {
+    decoder
+        .exif_metadata()
+        .ok()
+        .flatten()
+        .filter(|bytes| bytes.len() <= MAX_EXIF_BYTES)
+        .map_or_else(Metadata::default, metadata::read_exif)
+}
+
+fn inspect_decoder(mut decoder: impl ImageDecoder) -> Fields {
+    let mut fields = decoder_metadata(&mut decoder).details;
+    add_dimensions(&mut fields, decoder.dimensions());
+    fields
+}
+
 fn decode_image(mut decoder: impl ImageDecoder) -> image::ImageResult<DecodedImage> {
     let (width, height) = decoder.dimensions();
     if !valid_dimensions(width, height) || decoder.total_bytes() > MAX_DECODE_BYTES {
@@ -228,12 +284,7 @@ fn decode_image(mut decoder: impl ImageDecoder) -> image::ImageResult<DecodedIma
         ));
     }
 
-    let metadata = decoder
-        .exif_metadata()
-        .ok()
-        .flatten()
-        .filter(|bytes| bytes.len() <= MAX_EXIF_BYTES)
-        .map_or_else(Metadata::default, metadata::read_exif);
+    let metadata = decoder_metadata(&mut decoder);
     Ok(DecodedImage {
         orientation: decoder.orientation()?,
         pixels: DynamicImage::from_decoder(decoder)?,

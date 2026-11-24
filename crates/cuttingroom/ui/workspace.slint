@@ -2,7 +2,7 @@ import { StandardListView } from "std-widgets.slint";
 import { ActionButton } from "action-button.slint";
 import { Message, MessageSeverity } from "message-dialog.slint";
 import { FullPreview, PhotoCanvas } from "photo-canvas.slint";
-import { GridPhoto, MetadataEntry, PhotoGrid, PhotoMetadata, PreviewState } from "photo-grid.slint";
+import { GridPhoto, GroupDetails, MetadataEntry, MetadataFile, PhotoGrid, PhotoMetadata, PreviewState } from "photo-grid.slint";
 import { Palette } from "theme.slint";
 import { ResizeHandle } from "resize-handle.slint";
 import { Sidebar, SidebarSection } from "sidebar.slint";
@@ -78,6 +78,25 @@ component MetadataRow inherits HorizontalLayout {
     }
 }
 
+component MetadataBlock inherits VerticalLayout {
+    in property <MetadataFile> source;
+
+    padding-top: 8px;
+
+    Text {
+        text: root.source.filename;
+        color: Palette.text;
+        font-size: 12px;
+        font-weight: 600;
+        wrap: word-wrap;
+        accessible-role: text;
+    }
+
+    for field in root.source.fields: MetadataRow {
+        entry: field;
+    }
+}
+
 export component PhotoWorkspace inherits VerticalLayout {
     in property <WorkspaceView> view;
     in property <bool> show-project-info;
@@ -86,18 +105,26 @@ export component PhotoWorkspace inherits VerticalLayout {
     in property <[StandardListViewItem]> photo-files;
     in property <[GridPhoto]> grid-photos;
     in property <FullPreview> full-preview;
+    in property <GroupDetails> group-details;
     in-out property <int> active-index: -1;
+    out property <bool> metadata-details-visible: root.has-active-photo && root.show-inspector
+        && root.metadata-expanded && root.details-expanded;
     callback message-requested(Message);
     callback grid-viewport-changed(int, int);
     callback open-photo();
 
     private property <bool> browsing: root.view != WorkspaceView.photo;
     private property <bool> has-active-photo: root.active-index >= 0 && root.active-index < root.grid-photos.length;
-    private property <string> active-photo-name: root.has-active-photo ? root.grid-photos[root.active-index].name : "";
+    private property <string> active-photo-name: root.active-metadata.filename != "" ? root.active-metadata.filename
+        : root.has-active-photo ? root.grid-photos[root.active-index].name : "";
     private property <bool> preview-complete: !root.browsing && root.full-preview.index == root.active-index
         && root.full-preview.state != PreviewState.pending;
     private property <PhotoMetadata> active-metadata: root.preview-complete ? root.full-preview.metadata
-        : root.has-active-photo ? root.grid-photos[root.active-index].metadata : { summary: [], details: [] };
+        : root.has-active-photo ? root.grid-photos[root.active-index].metadata : { filename: "", summary: [] };
+    private property <bool> metadata-expanded: true;
+    private property <bool> details-expanded: false;
+    private property <PreviewState> details-state: root.group-details.index == root.active-index
+        ? root.group-details.state : PreviewState.pending;
     private property <bool> metadata-pending: root.has-active-photo && !root.preview-complete
         && (!root.browsing || root.grid-photos[root.active-index].state == PreviewState.pending);
     private property <length> handle-thickness: 7px;
@@ -260,8 +287,9 @@ export component PhotoWorkspace inherits VerticalLayout {
                 }
             }
 
-            if root.has-active-photo: metadata-section := SidebarSection {
+            if root.has-active-photo: SidebarSection {
                 title: "Metadata";
+                expanded <=> root.metadata-expanded;
 
                 if root.active-metadata.summary.length == 0: Text {
                     height: 27px;
@@ -274,13 +302,31 @@ export component PhotoWorkspace inherits VerticalLayout {
                     entry: field;
                 }
 
-                if root.active-metadata.details.length > 0: all := SidebarSection {
+                SidebarSection {
                     title: "Show all";
                     compact: true;
-                    expanded: false;
+                    expanded <=> root.details-expanded;
 
-                    for detail in metadata-section.expanded && all.expanded ? root.active-metadata.details : []: MetadataRow {
-                        entry: detail;
+                    if root.metadata-details-visible && root.details-state != PreviewState.ready: Text {
+                        height: 27px;
+                        text: root.details-state == PreviewState.pending ? "Loading file metadata…" : "File metadata unavailable";
+                        color: Palette.muted;
+                        vertical-alignment: center;
+                    }
+                    for file in root.metadata-details-visible && root.details-state == PreviewState.ready ? root.group-details.files : []: MetadataBlock {
+                        source: file;
+                    }
+                    if root.metadata-details-visible && root.details-state == PreviewState.ready && root.group-details.sidecars.length > 0: Text {
+                        height: 26px;
+                        text: "XMP sidecars";
+                        color: Palette.text;
+                        font-size: 12px;
+                        font-weight: 600;
+                        vertical-alignment: bottom;
+                        accessible-role: text;
+                    }
+                    for sidecar in root.metadata-details-visible && root.details-state == PreviewState.ready ? root.group-details.sidecars : []: MetadataBlock {
+                        source: sidecar;
                     }
                 }
             }

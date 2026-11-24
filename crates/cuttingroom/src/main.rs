@@ -7,6 +7,7 @@ mod grid;
 mod image_decode;
 mod metadata;
 mod preview;
+mod source_file;
 
 #[cfg(target_os = "macos")]
 mod macos {

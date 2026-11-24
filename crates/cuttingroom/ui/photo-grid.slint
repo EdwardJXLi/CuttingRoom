@@ -4,7 +4,9 @@ import { Palette } from "theme.slint";
 export enum PreviewState { pending, ready, unavailable, decoder-unavailable }
 
 export struct MetadataEntry { label: string, value: string }
-export struct PhotoMetadata { summary: [MetadataEntry], details: [MetadataEntry] }
+export struct MetadataFile { filename: string, fields: [MetadataEntry] }
+export struct GroupDetails { index: int, state: PreviewState, files: [MetadataFile], sidecars: [MetadataFile] }
+export struct PhotoMetadata { filename: string, summary: [MetadataEntry] }
 
 export struct GridPhoto {
     name: string,

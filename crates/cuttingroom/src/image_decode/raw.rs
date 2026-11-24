@@ -153,15 +153,8 @@ impl<'a> RawImage<'a> {
         let mut image = self
             .make_image(self.api.make_mem_thumb)?
             .decode(MAX_EMBEDDED_BYTES)?;
-        // SAFETY: The getters read dimensions from the live RAW context.
-        let (width, height) = unsafe {
-            (
-                (self.api.image_width)(self.context.as_ptr()),
-                (self.api.image_height)(self.context.as_ptr()),
-            )
-        };
-        if width > 0 && height > 0 {
-            image.source_dimensions = (width as u32, height as u32);
+        if let Some(dimensions) = self.dimensions() {
+            image.source_dimensions = dimensions;
         }
         image.metadata = self.metadata();
         Some(image)
@@ -204,7 +197,18 @@ impl<'a> RawImage<'a> {
         Some(image)
     }
 
-    fn metadata(&self) -> Metadata {
+    pub(crate) fn dimensions(&self) -> Option<(u32, u32)> {
+        // SAFETY: The getters read dimensions from the live RAW context.
+        let (width, height) = unsafe {
+            (
+                (self.api.image_width)(self.context.as_ptr()),
+                (self.api.image_height)(self.context.as_ptr()),
+            )
+        };
+        (width > 0 && height > 0).then_some((width as u32, height as u32))
+    }
+
+    pub(crate) fn metadata(&self) -> Metadata {
         let context = self.context.as_ptr();
         // SAFETY: The opened context belongs to this worker. Getters return borrowed
         // metadata prefixes that remain valid while this context is live and unchanged.
@@ -265,7 +269,9 @@ impl<'a> RawImage<'a> {
             }
             add(summary, "Exposure", exposure.join(", "));
             if positive(capture.iso) {
-                add(summary, "ISO", format!("{:.0}", capture.iso));
+                let iso = format!("{:.0}", capture.iso);
+                add(summary, "ISO", iso.clone());
+                add(details, "ISO", iso);
             }
             if positive(capture.focal_length) {
                 add(

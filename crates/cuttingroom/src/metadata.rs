@@ -1,13 +1,24 @@
 use std::{
     fmt::{self, Write},
     io::Cursor,
+    path::Path,
 };
 
 use exif::{Exif, In, Tag, Value};
 
+mod group;
+mod xmp;
+
+pub(crate) use group::{GroupMetadata, read_group};
+
 const MAX_VALUE_BYTES: usize = 256;
 const MAX_EXIF_ROWS: usize = 1024;
 pub(crate) type Fields = Vec<(String, String)>;
+
+pub(crate) struct MetadataSource {
+    pub(crate) filename: String,
+    pub(crate) fields: Fields,
+}
 
 #[derive(Default)]
 pub(crate) struct Metadata {
@@ -111,6 +122,22 @@ fn fields(exif: Exif) -> Metadata {
         );
     }
     Metadata { summary, details }
+}
+
+pub(crate) fn filename(path: &Path) -> String {
+    path.file_name()
+        .unwrap_or(path.as_os_str())
+        .to_string_lossy()
+        .into_owned()
+}
+
+pub(crate) fn add_dimensions(rows: &mut Fields, (width, height): (u32, u32)) {
+    add(rows, "Dimensions", format!("{width} × {height}"));
+}
+
+pub(crate) fn add_format(rows: &mut Fields, path: &Path) {
+    let format = path.extension().unwrap_or_default().to_string_lossy();
+    add(rows, "Format", format.to_ascii_uppercase());
 }
 
 pub(crate) fn add(rows: &mut Fields, label: &str, value: String) {
