@@ -462,7 +462,7 @@ impl GridSession {
 
         let state = grid.clone();
         let weak = window.as_weak();
-        window.on_grid_viewport_changed(move |first, end| {
+        window.on_thumbnail_viewport_changed(move |first, end| {
             if let Some(window) = weak.upgrade() {
                 let mut grid = state.borrow_mut();
                 let first = first.max(0) as usize;
@@ -935,6 +935,9 @@ impl Grid {
     }
 
     fn retained_range(&self) -> Range<usize> {
+        if self.visible.is_empty() {
+            return self.visible.clone();
+        }
         self.visible.start.saturating_sub(CACHE_MARGIN)
             ..self.visible.end.saturating_add(CACHE_MARGIN)
     }

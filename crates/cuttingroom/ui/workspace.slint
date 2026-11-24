@@ -1,5 +1,6 @@
 import { StandardListView } from "std-widgets.slint";
 import { ActionButton } from "action-button.slint";
+import { PhotoFilmstrip } from "filmstrip.slint";
 import { Message, MessageSeverity } from "message-dialog.slint";
 import { FullPreview, PhotoCanvas } from "photo-canvas.slint";
 import { ActiveSummary, GridPhoto, GroupDetails, MetadataEntry, MetadataFile, PhotoGrid, PhotoMetadata, PreviewState } from "photo-grid.slint";
@@ -27,29 +28,6 @@ component PhotoFileList inherits StandardListView {
             return false;
         }
         return true;
-    }
-}
-
-component WorkspacePane inherits Rectangle {
-    in property <string> heading;
-
-    @children
-
-    background: Palette.panel;
-    accessible-role: complementary;
-    accessible-label: root.heading;
-
-    Text {
-        x: 16px;
-        y: 0px;
-        width: parent.width - 32px;
-        height: 38px;
-        text: root.heading;
-        color: Palette.text;
-        font-weight: 600;
-        vertical-alignment: center;
-        overflow: elide;
-        accessible-role: none;
     }
 }
 
@@ -111,7 +89,7 @@ export component PhotoWorkspace inherits VerticalLayout {
     out property <bool> metadata-summary-visible: root.has-active-photo && root.show-inspector && root.metadata-expanded;
     out property <bool> metadata-details-visible: root.metadata-summary-visible && root.details-expanded;
     callback message-requested(Message);
-    callback grid-viewport-changed(int, int);
+    callback thumbnail-viewport-changed(int, int);
     callback open-photo();
 
     private property <bool> browsing: root.view != WorkspaceView.photo;
@@ -138,6 +116,12 @@ export component PhotoWorkspace inherits VerticalLayout {
     private property <length> preferred-left-width: 184px;
     private property <length> preferred-inspector-width: 254px;
     private property <length> filmstrip-height: 114px;
+    private property <{ first: int, end: int }> visible-thumbnails: root.browsing
+        ? grid.visible-photos : filmstrip.visible-photos;
+
+    changed visible-thumbnails => {
+        root.thumbnail-viewport-changed(self.visible-thumbnails.first, self.visible-thumbnails.end);
+    }
 
     public function navigate(key: string, repeat: bool) -> bool {
         if root.grid-photos.length == 0 {
@@ -235,7 +219,6 @@ export component PhotoWorkspace inherits VerticalLayout {
                 visible: root.view == WorkspaceView.grid;
                 photos: root.grid-photos;
                 active-index <=> root.active-index;
-                viewport-changed(first, end) => { root.grid-viewport-changed(first, end); }
                 open-photo => { root.open-photo(); }
             }
 
@@ -336,7 +319,7 @@ export component PhotoWorkspace inherits VerticalLayout {
         }
     }
 
-    if !root.browsing && root.show-filmstrip: ResizeHandle {
+    if filmstrip.visible && filmstrip.expanded: ResizeHandle {
         height: root.handle-thickness;
         label: "Resize Filmstrip";
         size: root.filmstrip-height;
@@ -347,8 +330,10 @@ export component PhotoWorkspace inherits VerticalLayout {
         resized(size) => { root.filmstrip-height = size; }
     }
 
-    if !root.browsing && root.show-filmstrip: WorkspacePane {
-        height: 38px + root.filmstrip-height;
-        heading: "Filmstrip";
+    filmstrip := PhotoFilmstrip {
+        visible: !root.browsing && root.show-filmstrip;
+        photos: root.grid-photos;
+        body-height: root.filmstrip-height;
+        active-index <=> root.active-index;
     }
 }

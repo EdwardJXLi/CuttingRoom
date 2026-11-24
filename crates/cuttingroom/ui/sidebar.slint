@@ -8,7 +8,9 @@ component SidebarRule inherits Rectangle {
 
 export component SidebarSection inherits VerticalLayout {
     in property <string> title;
+    in property <string> detail;
     in property <bool> compact;
+    in property <bool> flush-body;
     in-out property <bool> expanded: true;
     private property <bool> pointer-focused;
 
@@ -25,6 +27,7 @@ export component SidebarSection inherits VerticalLayout {
         forward-focus: keyboard;
         accessible-role: button;
         accessible-label: root.title;
+        accessible-description: root.detail;
         accessible-expandable: true;
         accessible-expanded: root.expanded;
         accessible-action-default => { root.expanded = !root.expanded; }
@@ -32,7 +35,7 @@ export component SidebarSection inherits VerticalLayout {
 
         Text {
             x: root.compact ? 0px : 8px;
-            width: parent.width - self.x - 8px;
+            width: detail-text.x - self.x - (root.detail == "" ? 0px : 8px);
             height: parent.height;
             text: (root.expanded ? "▾  " : "▸  ") + root.title;
             font-size: root.compact ? 12px : 1rem;
@@ -40,6 +43,17 @@ export component SidebarSection inherits VerticalLayout {
             color: Palette.text;
             vertical-alignment: center;
             overflow: elide;
+            accessible-role: none;
+        }
+
+        detail-text := Text {
+            x: parent.width - self.width - 8px;
+            width: self.preferred-width;
+            height: parent.height;
+            text: root.detail;
+            color: Palette.muted;
+            font-size: 12px;
+            vertical-alignment: center;
             accessible-role: none;
         }
 
@@ -75,10 +89,10 @@ export component SidebarSection inherits VerticalLayout {
             visible: root.expanded;
             y: 0px;
             height: self.preferred-height;
-            padding-left: root.compact ? 0px : 16px;
-            padding-right: root.compact ? 0px : 16px;
-            padding-top: 2px;
-            padding-bottom: root.compact ? 0px : 12px;
+            padding-left: root.compact || root.flush-body ? 0px : 16px;
+            padding-right: root.compact || root.flush-body ? 0px : 16px;
+            padding-top: root.flush-body ? 0px : 2px;
+            padding-bottom: root.compact || root.flush-body ? 0px : 12px;
             spacing: 0px;
             @children
         }

@@ -50,7 +50,7 @@ export component MainWindow inherits Window {
     callback rescan-folder();
     callback rebuild-thumbnail-cache();
     callback message-dismissed(accepted: bool);
-    callback grid-viewport-changed(int, int);
+    callback thumbnail-viewport-changed(int, int);
     callback active-photo-changed();
     private property <WorkspaceView> view: WorkspaceView.grid;
     private property <bool> show-project-info: true;
@@ -72,11 +72,7 @@ export component MainWindow inherits Window {
     }
     changed view => {
         navigation.focus();
-        if root.view == WorkspaceView.grid {
-            root.active-photo-changed();
-        } else {
-            root.grid-viewport-changed(0, 0);
-        }
+        root.active-photo-changed();
     }
     changed show-project-info => {
         if !root.show-project-info { navigation.focus(); }
@@ -214,7 +210,7 @@ export component MainWindow inherits Window {
                 active-summary: root.active-summary;
                 group-details: root.group-details;
                 active-index <=> root.active-index;
-                grid-viewport-changed(first, end) => { root.grid-viewport-changed(first, end); }
+                thumbnail-viewport-changed(first, end) => { root.thumbnail-viewport-changed(first, end); }
                 open-photo => { root.view = WorkspaceView.photo; }
                 message-requested(message) => { root.show-message(message); }
             }

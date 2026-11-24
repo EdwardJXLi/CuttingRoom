@@ -18,6 +18,57 @@ export struct GridPhoto {
     metadata: PhotoMetadata,
 }
 
+export component ThumbnailContent inherits Rectangle {
+    in property <GridPhoto> photo;
+    in property <ImageFit> image-fit: ImageFit.contain;
+
+    background: Palette.canvas;
+    clip: true;
+
+    Image {
+        width: parent.width;
+        height: parent.height;
+        source: root.photo.preview;
+        image-fit: root.image-fit;
+        accessible-role: none;
+    }
+
+    if root.photo.state != PreviewState.ready: Text {
+        width: parent.width;
+        height: parent.height;
+        text: root.photo.state == PreviewState.pending ? "Loading preview…"
+            : root.photo.state == PreviewState.decoder-unavailable ? "Preview decoder unavailable"
+            : "Preview unavailable";
+        color: Palette.muted;
+        font-size: 12px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    HorizontalLayout {
+        x: 5px;
+        y: 5px;
+        width: self.preferred-width;
+        height: 19px;
+        spacing: 4px;
+
+        for format in root.photo.formats: Rectangle {
+            width: format-label.preferred-width + 8px;
+            background: #141414da;
+
+            format-label := Text {
+                text: format;
+                color: Palette.text;
+                font-size: 12px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                accessible-role: none;
+            }
+        }
+    }
+}
+
 component PhotoTile inherits Rectangle {
     in property <GridPhoto> photo;
     in property <bool> active;
@@ -36,53 +87,9 @@ component PhotoTile inherits Rectangle {
         padding: 7px;
         spacing: 5px;
 
-        Rectangle {
-            background: Palette.canvas;
-            clip: true;
+        ThumbnailContent {
+            photo: root.photo;
             vertical-stretch: 1;
-
-            Image {
-                width: parent.width;
-                height: parent.height;
-                source: root.photo.preview;
-                image-fit: contain;
-                accessible-role: none;
-            }
-
-            if root.photo.state != PreviewState.ready: Text {
-                width: parent.width;
-                height: parent.height;
-                text: root.photo.state == PreviewState.pending ? "Loading preview…"
-                    : root.photo.state == PreviewState.decoder-unavailable ? "Preview decoder unavailable"
-                    : "Preview unavailable";
-                color: Palette.muted;
-                font-size: 12px;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-                overflow: elide;
-            }
-
-            HorizontalLayout {
-                x: 5px;
-                y: 5px;
-                width: self.preferred-width;
-                height: 19px;
-                spacing: 4px;
-
-                for format in root.photo.formats: Rectangle {
-                    width: format-label.preferred-width + 8px;
-                    background: #141414da;
-
-                    format-label := Text {
-                        text: format;
-                        color: Palette.text;
-                        font-size: 12px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                        accessible-role: none;
-                    }
-                }
-            }
         }
 
         Text {
@@ -104,8 +111,11 @@ component PhotoTile inherits Rectangle {
 export component PhotoGrid inherits Rectangle {
     in property <[GridPhoto]> photos;
     in-out property <int> active-index: -1;
-    callback viewport-changed(int, int);
     callback open-photo();
+    out property <{ first: int, end: int }> visible-photos: root.visible ? {
+        first: max(0, floor(-scroll.content-y / root.row-height) * root.columns),
+        end: min(root.photos.length, ceil((scroll.visible-height - scroll.content-y) / root.row-height) * root.columns),
+    } : { first: 0, end: 0 };
 
     private property <int> columns: max(2, floor(scroll.visible-width / 280px));
     private property <int> row-count: ceil(root.photos.length / root.columns);
@@ -113,12 +123,6 @@ export component PhotoGrid inherits Rectangle {
     private property <length> tile-width: (scroll.visible-width - 24px - (root.columns - 1) * root.gap) / root.columns;
     private property <length> tile-height: min(root.tile-width * 0.69, root.tile-width * 0.55 + 19px) + 72px;
     private property <length> row-height: root.tile-height + root.gap;
-    private property <{ first: int, end: int }> visible-photos: root.visible ? {
-        first: max(0, floor(-scroll.content-y / root.row-height) * root.columns),
-        end: min(root.photos.length, ceil((scroll.visible-height - scroll.content-y) / root.row-height) * root.columns),
-    } : { first: 0, end: 0 };
-
-    changed visible-photos => { root.viewport-changed(self.visible-photos.first, self.visible-photos.end); }
     changed visible => {
         if root.visible {
             root.reveal-active();

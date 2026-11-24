@@ -1,0 +1,150 @@
+import { ScrollView } from "std-widgets.slint";
+import { GridPhoto, ThumbnailContent } from "photo-grid.slint";
+import { SidebarSection } from "sidebar.slint";
+import { Palette } from "theme.slint";
+
+component FilmstripTile inherits Rectangle {
+    in property <GridPhoto> photo;
+    in property <bool> active;
+    callback activated();
+
+    background: Palette.canvas;
+    border-width: root.active ? 2px : 1px;
+    border-color: root.active ? Palette.text : Palette.line;
+    forward-focus: keyboard;
+    accessible-role: button;
+    accessible-label: root.photo.relative-path;
+    accessible-description: root.active ? "Active photo" : "";
+    accessible-action-default => { root.activated(); }
+
+    ThumbnailContent {
+        x: 4px;
+        y: 4px;
+        width: parent.width - 8px;
+        height: parent.height - 8px;
+        image-fit: cover;
+        photo: root.photo;
+
+        Rectangle {
+            x: 5px;
+            y: parent.height - self.height - 5px;
+            width: min(parent.width - 10px, filename.preferred-width + 8px);
+            height: 19px;
+            background: #141414da;
+
+            filename := Text {
+                x: 4px;
+                width: parent.width - 8px;
+                text: root.photo.name;
+                font-size: 12px;
+                color: Palette.text;
+                vertical-alignment: center;
+                overflow: elide;
+                accessible-role: none;
+            }
+        }
+    }
+
+    TouchArea {
+        clicked => { root.activated(); }
+    }
+
+    keyboard := FocusScope {
+        width: 0px;
+        focus-on-click: false;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                if !event.repeat { root.activated(); }
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    if keyboard.has-focus: Rectangle {
+        width: parent.width - 6px;
+        height: parent.height - 6px;
+        border-width: 1px;
+        border-color: Palette.focus;
+    }
+}
+
+export component PhotoFilmstrip inherits Rectangle {
+    in property <[GridPhoto]> photos;
+    in property <length> body-height;
+    in-out property <int> active-index: -1;
+    in-out property <bool> expanded: true;
+
+    out property <{ first: int, end: int }> visible-photos: root.body-visible && scroll.visible-width > 0px ? {
+        first: clamp(floor((-scroll.content-x - root.inset + root.gap) / root.stride), 0, root.photos.length),
+        end: clamp(ceil((scroll.visible-width - scroll.content-x - root.inset) / root.stride), 0, root.photos.length),
+    } : { first: 0, end: 0 };
+
+    private property <bool> body-visible: root.visible && root.expanded;
+    private property <length> tile-height: root.body-height - 16px;
+    private property <length> tile-width: max(146px, root.tile-height * 1.49);
+    private property <length> gap: 8px;
+    private property <length> inset: 8px;
+    private property <length> stride: root.tile-width + root.gap;
+
+    background: Palette.panel;
+    height: root.visible ? section.preferred-height : 0px;
+    vertical-stretch: 0;
+
+    function reveal-active() {
+        if !root.body-visible || scroll.visible-width <= 0px { return; }
+        let index = root.active-index;
+        let start = index * root.stride;
+        let end = start + root.tile-width + 2 * root.inset;
+        let offset = index >= 0 && index < root.photos.length
+            ? clamp(scroll.content-x, -start, max(-start, scroll.visible-width - end)) : 0px;
+        scroll.content-x = clamp(offset, min(0px, scroll.visible-width - scroll.content-width), 0px);
+    }
+
+    changed active-index => { root.reveal-active(); }
+    changed body-visible => { root.reveal-active(); }
+
+    section := SidebarSection {
+        title: "Filmstrip";
+        detail: root.active-index >= 0 && root.active-index < root.photos.length
+            ? "\{root.active-index + 1} of \{root.photos.length}" : "\{root.photos.length} photos";
+        expanded <=> root.expanded;
+        flush-body: true;
+
+        TouchArea {
+            height: root.body-height;
+
+            scroll-event(event) => {
+                if event.delta-y == 0px || abs(event.delta-x) >= abs(event.delta-y) { return reject; }
+                let offset = clamp(scroll.content-x + event.delta-y,
+                    min(0px, scroll.visible-width - scroll.content-width), 0px);
+                if offset == scroll.content-x { return reject; }
+                scroll.content-x = offset;
+                return accept;
+            }
+
+            scroll := ScrollView {
+                vertical-scrollbar-policy: always-off;
+                mouse-drag-pan-enabled: true;
+                content-width: 2 * root.inset + max(0px, root.photos.length * root.stride - root.gap);
+                content-height: self.visible-height;
+                accessible-role: groupbox;
+                accessible-label: "Photo thumbnails";
+
+                changed visible-width => { root.reveal-active(); }
+                changed content-width => { root.reveal-active(); }
+
+                for slot in max(0, root.visible-photos.end - root.visible-photos.first): FilmstripTile {
+                    private property <int> index: root.visible-photos.first + slot;
+                    x: root.inset + self.index * root.stride;
+                    y: 2px;
+                    width: root.tile-width;
+                    height: root.tile-height;
+                    photo: root.photos[self.index];
+                    active: root.active-index == self.index;
+                    activated => { root.active-index = self.index; }
+                }
+            }
+        }
+    }
+}
