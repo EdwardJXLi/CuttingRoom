@@ -2,7 +2,7 @@ import { StandardListView } from "std-widgets.slint";
 import { ActionButton } from "action-button.slint";
 import { Message, MessageSeverity } from "message-dialog.slint";
 import { FullPreview, PhotoCanvas } from "photo-canvas.slint";
-import { GridPhoto, GroupDetails, MetadataEntry, MetadataFile, PhotoGrid, PhotoMetadata, PreviewState } from "photo-grid.slint";
+import { ActiveSummary, GridPhoto, GroupDetails, MetadataEntry, MetadataFile, PhotoGrid, PhotoMetadata, PreviewState } from "photo-grid.slint";
 import { Palette } from "theme.slint";
 import { ResizeHandle } from "resize-handle.slint";
 import { Sidebar, SidebarSection } from "sidebar.slint";
@@ -105,10 +105,11 @@ export component PhotoWorkspace inherits VerticalLayout {
     in property <[StandardListViewItem]> photo-files;
     in property <[GridPhoto]> grid-photos;
     in property <FullPreview> full-preview;
+    in property <ActiveSummary> active-summary;
     in property <GroupDetails> group-details;
     in-out property <int> active-index: -1;
-    out property <bool> metadata-details-visible: root.has-active-photo && root.show-inspector
-        && root.metadata-expanded && root.details-expanded;
+    out property <bool> metadata-summary-visible: root.has-active-photo && root.show-inspector && root.metadata-expanded;
+    out property <bool> metadata-details-visible: root.metadata-summary-visible && root.details-expanded;
     callback message-requested(Message);
     callback grid-viewport-changed(int, int);
     callback open-photo();
@@ -117,16 +118,18 @@ export component PhotoWorkspace inherits VerticalLayout {
     private property <bool> has-active-photo: root.active-index >= 0 && root.active-index < root.grid-photos.length;
     private property <string> active-photo-name: root.active-metadata.filename != "" ? root.active-metadata.filename
         : root.has-active-photo ? root.grid-photos[root.active-index].name : "";
-    private property <bool> preview-complete: !root.browsing && root.full-preview.index == root.active-index
-        && root.full-preview.state != PreviewState.pending;
-    private property <PhotoMetadata> active-metadata: root.preview-complete ? root.full-preview.metadata
-        : root.has-active-photo ? root.grid-photos[root.active-index].metadata : { filename: "", summary: [] };
+    private property <bool> photo-preview-ready: !root.browsing && root.full-preview.index == root.active-index
+        && root.full-preview.state == PreviewState.ready;
+    private property <bool> thumbnail-ready: root.has-active-photo && root.grid-photos[root.active-index].state == PreviewState.ready;
+    private property <PhotoMetadata> active-metadata: root.photo-preview-ready ? root.full-preview.metadata
+        : root.thumbnail-ready ? root.grid-photos[root.active-index].metadata
+        : root.active-summary.index == root.active-index ? root.active-summary.metadata : { filename: "", summary: [] };
     private property <bool> metadata-expanded: true;
     private property <bool> details-expanded: false;
     private property <PreviewState> details-state: root.group-details.index == root.active-index
         ? root.group-details.state : PreviewState.pending;
-    private property <bool> metadata-pending: root.has-active-photo && !root.preview-complete
-        && (!root.browsing || root.grid-photos[root.active-index].state == PreviewState.pending);
+    private property <bool> metadata-pending: root.has-active-photo && !root.photo-preview-ready && !root.thumbnail-ready
+        && (root.active-summary.index != root.active-index || root.active-summary.state == PreviewState.pending);
     private property <length> handle-thickness: 7px;
     private property <length> minimum-left-width: 152px;
     private property <length> maximum-left-width: 330px;

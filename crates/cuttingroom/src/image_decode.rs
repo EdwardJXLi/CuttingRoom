@@ -11,7 +11,7 @@ use image::{
 };
 use jxl_image_rs_integration::JxlDecoder;
 
-use crate::metadata::{self, Fields, Metadata, add_dimensions};
+use crate::metadata::{self, Metadata};
 use crate::source_file;
 
 mod heif;
@@ -144,38 +144,31 @@ impl Decoder {
         directory: &Dir,
         path: &Path,
         format: PhotographFormat,
-    ) -> Result<Fields, DecodeError> {
+    ) -> Result<Metadata, DecodeError> {
         use DecodeError::Unavailable;
         use PhotographFormat::{Avif, Heif, Jpeg, JpegXl, OpenExr, Png, Raw, Tiff, WebP};
 
         let file = source_file::open(directory, path, MAX_SOURCE_BYTES).ok_or(Unavailable)?;
         match format {
-            Raw => {
-                let bytes = source_file::read(file, MAX_SOURCE_BYTES).ok_or(Unavailable)?;
-                let raw = self.raw(&bytes)?;
-                let mut fields = raw.metadata().details;
-                if let Some(dimensions) = raw.dimensions() {
-                    add_dimensions(&mut fields, dimensions);
-                }
-                Ok(fields)
-            }
+            Raw => self
+                .raw
+                .as_ref()
+                .ok_or(DecodeError::DecoderUnavailable)?
+                .inspect(file)
+                .ok_or(Unavailable),
             Tiff => {
                 let bytes = source_file::read(file, MAX_SOURCE_BYTES).ok_or(Unavailable)?;
                 let dimensions = ImageReader::with_format(Cursor::new(&bytes), ImageFormat::Tiff)
                     .into_dimensions()
                     .map_err(|_| Unavailable)?;
-                let mut fields = metadata::read_exif(bytes).details;
-                add_dimensions(&mut fields, dimensions);
-                Ok(fields)
+                let mut metadata = metadata::read_exif(bytes);
+                metadata.add_dimensions(dimensions);
+                Ok(metadata)
             }
-            Avif | Heif => {
-                let bytes = source_file::read(file, MAX_SOURCE_BYTES).ok_or(Unavailable)?;
-                Ok(metadata::read_container(&bytes).details)
-            }
-            Jpeg => {
-                let bytes = source_file::read(file, MAX_SOURCE_BYTES).ok_or(Unavailable)?;
-                jpeg::inspect(&bytes).ok_or(Unavailable)
-            }
+            Avif | Heif => Ok(metadata::read_container_from(
+                BufReader::new(file).take(MAX_SOURCE_BYTES),
+            )),
+            Jpeg => jpeg::inspect(BufReader::new(file).take(MAX_SOURCE_BYTES)).ok_or(Unavailable),
             JpegXl => jpeg_xl_decoder(file)
                 .map(inspect_decoder)
                 .map_err(|_| Unavailable),
@@ -282,10 +275,10 @@ fn decoder_metadata(decoder: &mut impl ImageDecoder) -> Metadata {
         .map_or_else(Metadata::default, metadata::read_exif)
 }
 
-fn inspect_decoder(mut decoder: impl ImageDecoder) -> Fields {
-    let mut fields = decoder_metadata(&mut decoder).details;
-    add_dimensions(&mut fields, decoder.dimensions());
-    fields
+fn inspect_decoder(mut decoder: impl ImageDecoder) -> Metadata {
+    let mut metadata = decoder_metadata(&mut decoder);
+    metadata.add_dimensions(decoder.dimensions());
+    metadata
 }
 
 fn decode_image(mut decoder: impl ImageDecoder) -> image::ImageResult<DecodedImage> {

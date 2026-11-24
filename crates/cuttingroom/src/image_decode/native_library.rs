@@ -13,7 +13,7 @@ pub(super) fn open(names: &[&str]) -> Option<Library> {
     names.iter().find_map(|name| {
         let path = directory.join(name);
         // SAFETY: Load only named codec libraries from the configured native library
-        // directory. Their initialization runs on the thumbnail worker.
+        // directory. Their initialization runs on the photo workers.
         unsafe {
             #[cfg(windows)]
             {

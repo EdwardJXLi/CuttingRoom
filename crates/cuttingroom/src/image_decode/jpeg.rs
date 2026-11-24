@@ -1,6 +1,6 @@
 use std::{
     ffi::{c_int, c_void},
-    io::Cursor,
+    io::{Cursor, Read, Seek},
     ptr::NonNull,
 };
 
@@ -8,7 +8,7 @@ use image::{DynamicImage, ImageDecoder, RgbaImage, codecs::jpeg::JpegDecoder};
 use turbojpeg_sys as tj;
 
 use super::{DecodedImage, MAX_DECODE_BYTES, PreviewSize, decode_image, limits, valid_dimensions};
-use crate::metadata::{self, Fields, add_dimensions};
+use crate::metadata::{self, Metadata};
 
 // The C API uses size_t. The pregenerated bindings use unsigned long, which is narrower on MSVC.
 unsafe extern "C" {
@@ -143,9 +143,105 @@ pub(super) fn decode(bytes: &[u8], size: PreviewSize) -> Option<DecodedImage> {
     })
 }
 
-pub(super) fn inspect(bytes: &[u8]) -> Option<Fields> {
-    let dimensions = Decompressor::open(bytes)?.dimensions()?;
-    let mut fields = metadata::read_container(bytes).details;
-    add_dimensions(&mut fields, dimensions);
-    Some(fields)
+pub(super) fn inspect(mut reader: impl Read + Seek) -> Option<Metadata> {
+    let mut marker = [0; 2];
+    reader.read_exact(&mut marker).ok()?;
+    if marker != [0xff, 0xd8] {
+        return None;
+    }
+    let mut dimensions = None;
+    let mut exif = None;
+    loop {
+        reader.read_exact(&mut marker).ok()?;
+        if marker[0] != 0xff {
+            return None;
+        }
+        while marker[1] == 0xff {
+            reader.read_exact(&mut marker[1..]).ok()?;
+        }
+        match marker[1] {
+            0xda | 0xd9 => break,
+            0x01 => continue,
+            0x00 | 0xd0..=0xd8 => return None,
+            _ => {}
+        }
+        let mut length = [0; 2];
+        reader.read_exact(&mut length).ok()?;
+        let mut remaining = usize::from(u16::from_be_bytes(length)).checked_sub(2)?;
+        match marker[1] {
+            0xc0..=0xc3 | 0xc5..=0xc7 | 0xc9..=0xcb | 0xcd..=0xcf if remaining >= 6 => {
+                let mut frame = [0; 5];
+                reader.read_exact(&mut frame).ok()?;
+                let height = u16::from_be_bytes([frame[1], frame[2]]);
+                let width = u16::from_be_bytes([frame[3], frame[4]]);
+                if width != 0 && height != 0 {
+                    dimensions = Some((u32::from(width), u32::from(height)));
+                }
+                remaining -= frame.len();
+            }
+            0xe1 if exif.is_none() && remaining >= 6 => {
+                let mut signature = [0; 6];
+                reader.read_exact(&mut signature).ok()?;
+                remaining -= signature.len();
+                if &signature == b"Exif\0\0" {
+                    let mut bytes = vec![0; remaining];
+                    reader.read_exact(&mut bytes).ok()?;
+                    exif = Some(bytes);
+                    remaining = 0;
+                }
+            }
+            _ => {}
+        }
+        // Skip marker payloads such as ICC profiles. Stop before the first pixel scan.
+        reader.seek_relative(remaining as i64).ok()?;
+    }
+    let dimensions = dimensions?;
+    let mut embedded = exif.map_or_else(Metadata::default, metadata::read_exif);
+    embedded.add_dimensions(dimensions);
+    Some(embedded)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{self, Cursor, Read, Seek, SeekFrom};
+
+    use super::inspect;
+
+    struct CountReads {
+        source: Cursor<Vec<u8>>,
+        bytes_read: usize,
+    }
+
+    impl Read for CountReads {
+        fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+            let count = self.source.read(bytes)?;
+            self.bytes_read += count;
+            Ok(count)
+        }
+    }
+
+    impl Seek for CountReads {
+        fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+            self.source.seek(position)
+        }
+    }
+
+    #[test]
+    fn metadata_inspection_skips_unrelated_segments_and_pixel_data() -> io::Result<()> {
+        let mut bytes = vec![0xff, 0xd8, 0xff, 0xe2, 0xff, 0xff];
+        bytes.resize(bytes.len() + 65_533, 0);
+        bytes.extend_from_slice(&[
+            0xff, 0xc0, 0, 11, 8, 0, 20, 0, 40, 1, 1, 0x11, 0, 0xff, 0xda,
+        ]);
+        bytes.resize(bytes.len() + 1024 * 1024, 0);
+        let mut reader = CountReads {
+            source: Cursor::new(bytes),
+            bytes_read: 0,
+        };
+        let metadata =
+            inspect(&mut reader).ok_or_else(|| io::Error::other("missing dimensions"))?;
+        assert_eq!(metadata.summary, [("Dimensions".into(), "40 × 20".into())]);
+        assert_eq!(reader.bytes_read, 17);
+        Ok(())
+    }
 }

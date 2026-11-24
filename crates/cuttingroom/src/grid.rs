@@ -21,8 +21,8 @@ use slint::{
 };
 
 use crate::{
-    FullPreview, GridPhoto, GroupDetails, MainWindow, MetadataEntry, MetadataFile, PhotoMetadata,
-    PreviewState,
+    ActiveSummary, FullPreview, GridPhoto, GroupDetails, MainWindow, MetadataEntry, MetadataFile,
+    PhotoMetadata, PreviewState,
     image_decode::{DecodeError, Decoder, PreviewSize},
     metadata::{Fields, GroupMetadata, MetadataSource, read_group},
     preview::{self, Preview},
@@ -36,7 +36,7 @@ pub(crate) struct GridSession {
     pub(crate) grid: Rc<RefCell<Grid>>,
     completed: Receiver<(u64, usize, JobResult)>,
     task: slint::JoinHandle<()>,
-    worker: thread::JoinHandle<()>,
+    workers: [thread::JoinHandle<()>; 2],
 }
 
 pub(crate) struct Grid {
@@ -45,8 +45,13 @@ pub(crate) struct Grid {
     photos: Rc<VecModel<GridPhoto>>,
     visible: Range<usize>,
     cached: BTreeSet<usize>,
+    preview: JobQueue,
+    metadata: JobQueue,
+}
+
+struct JobQueue {
     generation: Arc<AtomicU64>,
-    in_flight: Option<JobKind>,
+    in_flight: bool,
     jobs: Sender<Job>,
 }
 
@@ -61,30 +66,81 @@ struct Job {
 #[derive(Clone, Copy)]
 enum JobKind {
     Preview(PreviewSize),
+    Summary,
     Details,
 }
 
 enum JobResult {
     Preview(PreviewSize, Preview),
+    Summary(Option<MetadataSource>),
     Details(GroupMetadata),
+}
+
+impl JobQueue {
+    fn start(
+        name: &str,
+        results: Sender<(u64, usize, JobResult)>,
+    ) -> io::Result<(Self, thread::JoinHandle<()>)> {
+        let (jobs, requests) = bounded::<Job>(1);
+        let generation = Arc::new(AtomicU64::new(0));
+        let current = generation.clone();
+        let worker = thread::Builder::new().name(name.into()).spawn(move || {
+            let decoder = Decoder::new();
+            while let Ok(job) = requests.recv_blocking() {
+                let cancelled =
+                    || requests.is_closed() || current.load(Ordering::Relaxed) != job.generation;
+                let result = match job.kind {
+                    JobKind::Preview(size) => JobResult::Preview(
+                        size,
+                        preview::load(&decoder, &job.directory, &job.paths, size, cancelled),
+                    ),
+                    JobKind::Summary => JobResult::Summary(preview::read_summary(
+                        &decoder,
+                        &job.directory,
+                        &job.paths,
+                        cancelled,
+                    )),
+                    JobKind::Details => JobResult::Details(read_group(
+                        &decoder,
+                        &job.directory,
+                        &job.paths,
+                        cancelled,
+                    )),
+                };
+                if results
+                    .send_blocking((job.generation, job.index, result))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })?;
+        Ok((
+            Self {
+                generation,
+                in_flight: false,
+                jobs,
+            },
+            worker,
+        ))
+    }
 }
 
 impl GridSession {
     pub(crate) fn start(window: &MainWindow) -> Result<Self, Box<dyn std::error::Error>> {
-        let (jobs, requests) = bounded::<Job>(1);
-        let (results, completed) = bounded(1);
+        let (results, completed) = bounded(2);
+        let (preview, preview_worker) = JobQueue::start("preview worker", results.clone())?;
+        let (metadata, metadata_worker) = JobQueue::start("metadata worker", results)?;
         let photos = Rc::new(VecModel::default());
         window.set_grid_photos(photos.clone().into());
-        let generation = Arc::new(AtomicU64::new(0));
         let grid = Rc::new(RefCell::new(Grid {
             directory: None,
             groups: Vec::new(),
             photos,
             visible: 0..0,
             cached: BTreeSet::new(),
-            generation: generation.clone(),
-            in_flight: None,
-            jobs,
+            preview,
+            metadata,
         }));
 
         let state = grid.clone();
@@ -113,63 +169,46 @@ impl GridSession {
         let task = slint::spawn_local(async move {
             while let Ok((generation, index, result)) = updates.recv().await {
                 let Some(window) = weak.upgrade() else { break };
-                state.borrow_mut().apply(&window, generation, index, result);
+                let mut grid = state.borrow_mut();
+                let is_preview = matches!(result, JobResult::Preview(..));
+                grid.apply(&window, generation, index, result);
+                if !is_preview {
+                    grid.metadata.in_flight = false;
+                    grid.request_next(&window);
+                    continue;
+                }
 
                 let state = state.clone();
                 let weak = weak.clone();
                 Timer::single_shot(UPDATE_INTERVAL, move || {
                     if let Some(window) = weak.upgrade() {
                         let mut grid = state.borrow_mut();
-                        grid.in_flight = None;
+                        grid.preview.in_flight = false;
                         grid.request_next(&window);
                     }
                 });
             }
         })?;
 
-        let worker = thread::Builder::new()
-            .name("preview worker".into())
-            .spawn(move || {
-                let decoder = Decoder::new();
-                while let Ok(job) = requests.recv_blocking() {
-                    let cancelled = || {
-                        requests.is_closed() || generation.load(Ordering::Relaxed) != job.generation
-                    };
-                    let result = match job.kind {
-                        JobKind::Preview(size) => JobResult::Preview(
-                            size,
-                            preview::load(&decoder, &job.directory, &job.paths, size, cancelled),
-                        ),
-                        JobKind::Details => JobResult::Details(read_group(
-                            &decoder,
-                            &job.directory,
-                            &job.paths,
-                            cancelled,
-                        )),
-                    };
-                    if results
-                        .send_blocking((job.generation, job.index, result))
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-            })?;
         Ok(Self {
             grid,
             completed,
             task,
-            worker,
+            workers: [preview_worker, metadata_worker],
         })
     }
 
     pub(crate) fn finish(self) -> io::Result<()> {
-        self.grid.borrow().jobs.close();
+        self.grid.borrow().preview.jobs.close();
+        self.grid.borrow().metadata.jobs.close();
         self.completed.close();
         self.task.abort();
-        self.worker
-            .join()
-            .map_err(|_| io::Error::other("preview worker failed"))
+        let [preview, metadata] = self.workers;
+        let preview = preview.join();
+        let metadata = metadata.join();
+        preview
+            .and(metadata)
+            .map_err(|_| io::Error::other("photo worker failed"))
     }
 }
 
@@ -198,7 +237,8 @@ impl Grid {
             .collect();
         self.directory = directory.map(Arc::new);
         self.groups = groups;
-        self.generation.fetch_add(1, Ordering::Relaxed);
+        self.preview.generation.fetch_add(1, Ordering::Relaxed);
+        self.metadata.generation.fetch_add(1, Ordering::Relaxed);
         self.cached.clear();
         self.photos.set_vec(photo_rows);
         window.set_photo_files(Rc::new(VecModel::from(file_rows)).into());
@@ -208,23 +248,20 @@ impl Grid {
             }),
         );
         self.reset_preview(window, self.preview_target(window));
-        self.reset_details(window);
+        self.reset_metadata(window);
         self.request_next(window);
     }
 
     fn refresh(&mut self, window: &MainWindow) {
         let target = self.preview_target(window);
         let preview_changed = target != window.get_full_preview().index;
-        let details_changed = window.get_active_index() != window.get_group_details().index;
-        if preview_changed || (details_changed && matches!(self.in_flight, Some(JobKind::Details)))
-        {
-            self.generation.fetch_add(1, Ordering::Relaxed);
-        }
         if preview_changed {
+            self.preview.generation.fetch_add(1, Ordering::Relaxed);
             self.reset_preview(window, target);
         }
-        if details_changed {
-            self.reset_details(window);
+        if window.get_active_index() != window.get_active_summary().index {
+            self.metadata.generation.fetch_add(1, Ordering::Relaxed);
+            self.reset_metadata(window);
         }
 
         let retained = self.retained_range();
@@ -266,43 +303,51 @@ impl Grid {
         });
     }
 
-    fn reset_details(&self, window: &MainWindow) {
+    fn reset_metadata(&self, window: &MainWindow) {
+        let index = window.get_active_index();
+        let state = if self.directory.is_some() {
+            PreviewState::Pending
+        } else {
+            PreviewState::Unavailable
+        };
+        window.set_active_summary(ActiveSummary {
+            index,
+            state,
+            ..ActiveSummary::default()
+        });
         window.set_group_details(GroupDetails {
-            index: window.get_active_index(),
-            state: if self.directory.is_some() {
-                PreviewState::Pending
-            } else {
-                PreviewState::Unavailable
-            },
+            index,
+            state,
             ..GroupDetails::default()
         });
     }
 
     fn request_next(&mut self, window: &MainWindow) {
-        if self.in_flight.is_some() {
-            return;
-        }
         let Some(directory) = &self.directory else {
             return;
         };
-        if let Some((index, kind)) = self.next_job(window)
-            && let Some(group) = self.groups.get(index)
-            && self
-                .jobs
-                .try_send(Job {
-                    directory: directory.clone(),
-                    paths: group.files.clone(),
-                    index,
-                    generation: self.generation.load(Ordering::Relaxed),
-                    kind,
-                })
-                .is_ok()
-        {
-            self.in_flight = Some(kind);
+        let metadata = self.next_metadata_job(window);
+        let preview = self.next_preview_job(window);
+        for (queue, next) in [(&mut self.metadata, metadata), (&mut self.preview, preview)] {
+            if !queue.in_flight
+                && let Some((index, kind)) = next
+                && let Some(group) = self.groups.get(index)
+            {
+                queue.in_flight = queue
+                    .jobs
+                    .try_send(Job {
+                        directory: directory.clone(),
+                        paths: group.files.clone(),
+                        index,
+                        generation: queue.generation.load(Ordering::Relaxed),
+                        kind,
+                    })
+                    .is_ok();
+            }
         }
     }
 
-    fn next_job(&self, window: &MainWindow) -> Option<(usize, JobKind)> {
+    fn next_preview_job(&self, window: &MainWindow) -> Option<(usize, JobKind)> {
         if window.get_photo_view_active() {
             let preview = window.get_full_preview();
             if preview.state == PreviewState::Pending
@@ -310,17 +355,9 @@ impl Grid {
             {
                 return Some((index, JobKind::Preview(PreviewSize::Photo)));
             }
-        }
-        let active = active_index(window);
-        if window.get_metadata_details_visible()
-            && window.get_group_details().state == PreviewState::Pending
-            && let Some(index) = active
-        {
-            return Some((index, JobKind::Details));
-        }
-        if window.get_photo_view_active() {
             return None;
         }
+        let active = active_index(window);
         let next = |index: &usize| !self.cached.contains(index) && *index < self.groups.len();
         active
             .filter(|index| self.visible.contains(index) && next(index))
@@ -329,12 +366,55 @@ impl Grid {
             .map(|index| (index, JobKind::Preview(PreviewSize::Thumbnail)))
     }
 
+    fn next_metadata_job(&self, window: &MainWindow) -> Option<(usize, JobKind)> {
+        let index = active_index(window)?;
+        if window.get_metadata_summary_visible()
+            && window.get_active_summary().state == PreviewState::Pending
+        {
+            let preview = window.get_full_preview();
+            let thumbnail_ready = self
+                .photos
+                .row_data(index)
+                .is_some_and(|photo| photo.state == PreviewState::Ready);
+            let photo_ready = preview.index == index as i32 && preview.state == PreviewState::Ready;
+            if !(thumbnail_ready || photo_ready) {
+                return Some((index, JobKind::Summary));
+            }
+        }
+        if window.get_metadata_details_visible()
+            && window.get_group_details().state == PreviewState::Pending
+        {
+            return Some((index, JobKind::Details));
+        }
+        None
+    }
+
     fn apply(&mut self, window: &MainWindow, generation: u64, index: usize, result: JobResult) {
-        if generation != self.generation.load(Ordering::Relaxed) {
+        let queue = if matches!(result, JobResult::Preview(..)) {
+            &self.preview
+        } else {
+            &self.metadata
+        };
+        if generation != queue.generation.load(Ordering::Relaxed) {
             return;
         }
         match result {
             JobResult::Preview(size, preview) => self.apply_preview(window, index, size, preview),
+            JobResult::Summary(summary) if active_index(window) == Some(index) => {
+                let mut active = ActiveSummary {
+                    index: index as i32,
+                    state: PreviewState::Unavailable,
+                    ..ActiveSummary::default()
+                };
+                if let Some(summary) = summary {
+                    active.state = PreviewState::Ready;
+                    active.metadata = PhotoMetadata {
+                        filename: summary.filename.into(),
+                        summary: metadata_model(summary.fields),
+                    };
+                }
+                window.set_active_summary(active);
+            }
             JobResult::Details(details) if active_index(window) == Some(index) => {
                 window.set_group_details(GroupDetails {
                     index: index as i32,
@@ -343,7 +423,7 @@ impl Grid {
                     sidecars: metadata_files(details.sidecars),
                 });
             }
-            JobResult::Details(_) => (),
+            JobResult::Summary(_) | JobResult::Details(_) => (),
         }
     }
 

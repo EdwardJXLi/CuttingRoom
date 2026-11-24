@@ -3,20 +3,38 @@ use std::{
     mem::offset_of,
     ptr::NonNull,
     slice,
+    sync::{Mutex, MutexGuard},
 };
 
+#[cfg(unix)]
+use std::{ffi::CString, io::Seek, os::fd::AsRawFd};
+
+use cap_std::fs::File;
 use image::{DynamicImage, GrayImage, RgbImage};
 use libloading::Library;
 
-use super::{DecodedImage, MAX_DECODE_BYTES, PreviewSize, jpeg, native_library, valid_dimensions};
+use super::{
+    DecodedImage, MAX_DECODE_BYTES, MAX_SOURCE_BYTES, PreviewSize, jpeg, native_library,
+    valid_dimensions,
+};
 use crate::metadata::{Metadata, add, camera_name, clean_text};
+use crate::source_file;
 
 #[cfg(target_os = "linux")]
-const LIBRARIES: &[&str] = &["libraw_r.so.25", "libraw.so.25"];
+const LIBRARIES: &[&str] = &["libraw_r.so.25"];
+#[cfg(target_os = "linux")]
+const SERIAL_LIBRARIES: &[&str] = &["libraw.so.25"];
 #[cfg(target_os = "macos")]
-const LIBRARIES: &[&str] = &["libraw_r.25.dylib", "libraw.25.dylib"];
+const LIBRARIES: &[&str] = &["libraw_r.25.dylib"];
+#[cfg(target_os = "macos")]
+const SERIAL_LIBRARIES: &[&str] = &["libraw.25.dylib"];
 #[cfg(target_os = "windows")]
 const LIBRARIES: &[&str] = &["libraw.dll", "raw.dll"];
+#[cfg(target_os = "windows")]
+const SERIAL_LIBRARIES: &[&str] = &[];
+
+// Non-reentrant Unix builds use global unpacker state across contexts.
+static SERIAL_CONTEXT: Mutex<()> = Mutex::new(());
 
 const NO_DATA_ERROR_CALLBACK: c_uint = 1 << 1;
 const JPEG: c_int = 1;
@@ -24,6 +42,8 @@ const BITMAP: c_int = 2;
 const MIN_VERSION: c_int = (22 << 8) | 3;
 const NEXT_ABI_VERSION: c_int = 23 << 8;
 const MAX_EMBEDDED_BYTES: usize = 64 * 1024 * 1024;
+#[cfg(unix)]
+const IO_ERROR: c_int = -100009;
 
 #[repr(C)]
 struct ProcessedImage {
@@ -64,9 +84,12 @@ struct Capture {
 
 pub(super) struct RawDecoder {
     _library: Library,
+    serial: bool,
     init: unsafe extern "C" fn(c_uint) -> *mut c_void,
     close: unsafe extern "C" fn(*mut c_void),
     open_buffer: unsafe extern "C" fn(*mut c_void, *const c_void, usize) -> c_int,
+    #[cfg(unix)]
+    open_file: Option<unsafe extern "C" fn(*mut c_void, *const std::ffi::c_char) -> c_int>,
     unpack_thumb: unsafe extern "C" fn(*mut c_void) -> c_int,
     unpack: unsafe extern "C" fn(*mut c_void) -> c_int,
     process: unsafe extern "C" fn(*mut c_void) -> c_int,
@@ -86,6 +109,7 @@ pub(crate) struct RawImage<'a> {
     api: &'a RawDecoder,
     context: NonNull<c_void>,
     _source: &'a [u8],
+    _serial_guard: Option<MutexGuard<'static, ()>>,
 }
 
 struct ImageMemory<'a> {
@@ -95,7 +119,9 @@ struct ImageMemory<'a> {
 
 impl RawDecoder {
     pub(super) fn new() -> Option<Self> {
-        let library = native_library::open(LIBRARIES)?;
+        let (library, serial) = native_library::open(LIBRARIES)
+            .map(|library| (library, false))
+            .or_else(|| native_library::open(SERIAL_LIBRARIES).map(|library| (library, true)))?;
         use native_library::symbol;
 
         // SAFETY: These are the C signatures from LibRaw 0.22. The function
@@ -107,9 +133,12 @@ impl RawDecoder {
                 return None;
             }
             Some(Self {
+                serial,
                 init: symbol(&library, b"libraw_init")?,
                 close: symbol(&library, b"libraw_close")?,
                 open_buffer: symbol(&library, b"libraw_open_buffer")?,
+                #[cfg(unix)]
+                open_file: symbol(&library, b"libraw_open_file"),
                 unpack_thumb: symbol(&library, b"libraw_unpack_thumb")?,
                 unpack: symbol(&library, b"libraw_unpack")?,
                 process: symbol(&library, b"libraw_dcraw_process")?,
@@ -129,21 +158,69 @@ impl RawDecoder {
     }
 
     pub(super) fn open<'a>(&'a self, bytes: &'a [u8]) -> Option<RawImage<'a>> {
+        let image = self.context(bytes)?;
+        // SAFETY: The context is live. RawImage borrows the source until after close.
+        let status = unsafe {
+            (self.open_buffer)(image.context.as_ptr(), bytes.as_ptr().cast(), bytes.len())
+        };
+        (status == 0).then_some(image)
+    }
+
+    pub(super) fn inspect(&self, file: File) -> Option<Metadata> {
+        #[cfg(unix)]
+        let file = if let Some(open_file) = self.open_file {
+            let mut file = file;
+            #[cfg(target_os = "linux")]
+            let fd_directory = "/proc/self/fd";
+            #[cfg(target_os = "macos")]
+            let fd_directory = "/dev/fd";
+            let path = CString::new(format!("{fd_directory}/{}", file.as_raw_fd())).ok()?;
+            let image = self.context(&[])?;
+            // SAFETY: The descriptor path refers to the already validated, live read-only file.
+            // LibRaw opens its own seekable stream and releases it when the context closes.
+            let status = unsafe { open_file(image.context.as_ptr(), path.as_ptr()) };
+            match status {
+                0 => return Some(image.inspected_metadata()),
+                IO_ERROR => {
+                    drop(image);
+                    file.rewind().ok()?;
+                    file
+                }
+                _ => return None,
+            }
+        } else {
+            file
+        };
+        let bytes = source_file::read(file, MAX_SOURCE_BYTES)?;
+        Some(self.open(&bytes)?.inspected_metadata())
+    }
+
+    fn context<'a>(&'a self, bytes: &'a [u8]) -> Option<RawImage<'a>> {
+        let serial_guard = if self.serial {
+            Some(SERIAL_CONTEXT.lock().ok()?)
+        } else {
+            None
+        };
         // SAFETY: The worker owns the new context and RawImage closes it once.
         let context = NonNull::new(unsafe { (self.init)(NO_DATA_ERROR_CALLBACK) })?;
-        let image = RawImage {
+        Some(RawImage {
             api: self,
             context,
             _source: bytes,
-        };
-        // SAFETY: The context is live. RawImage borrows the source until after close.
-        let status =
-            unsafe { (self.open_buffer)(context.as_ptr(), bytes.as_ptr().cast(), bytes.len()) };
-        (status == 0).then_some(image)
+            _serial_guard: serial_guard,
+        })
     }
 }
 
 impl<'a> RawImage<'a> {
+    fn inspected_metadata(&self) -> Metadata {
+        let mut metadata = self.metadata();
+        if let Some(dimensions) = self.dimensions() {
+            metadata.add_dimensions(dimensions);
+        }
+        metadata
+    }
+
     pub(crate) fn embedded_preview(&mut self, size: PreviewSize) -> Option<DecodedImage> {
         // SAFETY: LibRaw successfully opened the context on this worker.
         if unsafe { (self.api.unpack_thumb)(self.context.as_ptr()) } != 0 {

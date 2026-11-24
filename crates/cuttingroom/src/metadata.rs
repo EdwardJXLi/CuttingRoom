@@ -1,6 +1,6 @@
 use std::{
     fmt::{self, Write},
-    io::Cursor,
+    io::{BufRead, Cursor, Seek},
     path::Path,
 };
 
@@ -27,6 +27,13 @@ pub(crate) struct Metadata {
     pub(crate) details: Fields,
 }
 
+impl Metadata {
+    pub(crate) fn add_dimensions(&mut self, dimensions: (u32, u32)) {
+        add_dimensions(&mut self.summary, dimensions);
+        add_dimensions(&mut self.details, dimensions);
+    }
+}
+
 pub(crate) fn read_exif(bytes: Vec<u8>) -> Metadata {
     exif::Reader::new()
         .read_raw(bytes)
@@ -35,11 +42,15 @@ pub(crate) fn read_exif(bytes: Vec<u8>) -> Metadata {
 }
 
 pub(crate) fn read_container(bytes: &[u8]) -> Metadata {
-    container_exif(bytes).map_or_else(Metadata::default, fields)
+    read_container_from(Cursor::new(bytes))
+}
+
+pub(crate) fn read_container_from(reader: impl BufRead + Seek) -> Metadata {
+    container_exif(reader).map_or_else(Metadata::default, fields)
 }
 
 pub(crate) fn read_jpeg(bytes: &[u8]) -> (Metadata, Orientation) {
-    let Some(exif) = container_exif(bytes) else {
+    let Some(exif) = container_exif(Cursor::new(bytes)) else {
         return (Metadata::default(), Orientation::NoTransforms);
     };
     let orientation = exif
@@ -51,10 +62,8 @@ pub(crate) fn read_jpeg(bytes: &[u8]) -> (Metadata, Orientation) {
     (fields(exif), orientation)
 }
 
-fn container_exif(bytes: &[u8]) -> Option<Exif> {
-    exif::Reader::new()
-        .read_from_container(&mut Cursor::new(bytes))
-        .ok()
+fn container_exif(mut reader: impl BufRead + Seek) -> Option<Exif> {
+    exif::Reader::new().read_from_container(&mut reader).ok()
 }
 
 fn fields(exif: Exif) -> Metadata {

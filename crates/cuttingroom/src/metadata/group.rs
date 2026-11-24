@@ -25,7 +25,7 @@ pub(crate) fn read_group(
             let mut fields = Fields::new();
             add_format(&mut fields, path);
             match decoder.inspect(directory, path, format) {
-                Ok(mut embedded) => fields.append(&mut embedded),
+                Ok(mut embedded) => fields.append(&mut embedded.details),
                 Err(error) => {
                     let message = match error {
                         DecodeError::Unavailable => "Unavailable",

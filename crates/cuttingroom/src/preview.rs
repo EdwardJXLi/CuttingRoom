@@ -5,7 +5,7 @@ use cr_project::{PhotographFormat, photograph_format};
 use slint::{Rgba8Pixel, SharedPixelBuffer};
 
 use crate::image_decode::{DecodeError, DecodedImage, Decoder, PreviewSize, read_image_file};
-use crate::metadata::{Fields, add_dimensions, add_format, filename};
+use crate::metadata::{Fields, MetadataSource, add_dimensions, add_format, filename};
 
 type Pixels = SharedPixelBuffer<Rgba8Pixel>;
 
@@ -28,29 +28,11 @@ pub(crate) fn load(
     size: PreviewSize,
     cancelled: impl Fn() -> bool,
 ) -> Preview {
-    use PhotographFormat::{Jpeg, Png, Raw, Tiff};
-
-    let mut rasters = Vec::new();
-    let mut raws = Vec::new();
-    for path in paths.iter().map(PathBuf::as_path) {
-        match photograph_format(path) {
-            Some(Raw) => raws.push(path),
-            Some(format) => rasters.push((format, path)),
-            None => (),
-        }
-    }
-    rasters.sort_by_key(|(format, _)| match format {
-        Jpeg => 0,
-        Png => 1,
-        Tiff => 2,
-        _ => 3,
-    });
-
-    let preferred = rasters
-        .first()
-        .map(|(_, path)| *path)
-        .or_else(|| raws.first().copied());
-    match render(decoder, directory, rasters, &raws, size, cancelled) {
+    let sources = ordered_sources(paths);
+    let preferred = sources.first().map(|(_, path)| *path);
+    let (rasters, raws) =
+        sources.split_at(sources.partition_point(|(format, _)| *format != PhotographFormat::Raw));
+    match render(decoder, directory, rasters, raws, size, cancelled) {
         Ok(rendered) => Preview {
             filename: filename(rendered.path),
             pixels: Ok(rendered.pixels),
@@ -64,18 +46,58 @@ pub(crate) fn load(
     }
 }
 
+pub(crate) fn read_summary(
+    decoder: &Decoder,
+    directory: &Dir,
+    paths: &[PathBuf],
+    cancelled: impl Fn() -> bool,
+) -> Option<MetadataSource> {
+    for (format, path) in ordered_sources(paths) {
+        if cancelled() {
+            break;
+        }
+        if let Ok(metadata) = decoder.inspect(directory, path, format) {
+            let mut fields = metadata.summary;
+            add_format(&mut fields, path);
+            return Some(MetadataSource {
+                filename: filename(path),
+                fields,
+            });
+        }
+    }
+    None
+}
+
+fn ordered_sources(paths: &[PathBuf]) -> Vec<(PhotographFormat, &Path)> {
+    use PhotographFormat::{Jpeg, Png, Raw, Tiff};
+
+    let mut sources: Vec<_> = paths
+        .iter()
+        .map(PathBuf::as_path)
+        .filter_map(|path| Some((photograph_format(path)?, path)))
+        .collect();
+    sources.sort_by_key(|(format, _)| match format {
+        Jpeg => 0,
+        Png => 1,
+        Tiff => 2,
+        Raw => 4,
+        _ => 3,
+    });
+    sources
+}
+
 fn render<'a>(
     decoder: &Decoder,
     directory: &Dir,
-    rasters: Vec<(PhotographFormat, &'a Path)>,
-    raws: &[&'a Path],
+    rasters: &[(PhotographFormat, &'a Path)],
+    raws: &[(PhotographFormat, &'a Path)],
     size: PreviewSize,
     cancelled: impl Fn() -> bool,
 ) -> Result<Rendered<'a>, DecodeError> {
     use DecodeError::{DecoderUnavailable, Unavailable};
 
     let mut error = Unavailable;
-    for (format, path) in rasters {
+    for &(format, path) in rasters {
         if cancelled() {
             return Err(Unavailable);
         }
@@ -98,7 +120,7 @@ fn render<'a>(
 fn load_raw<'a>(
     decoder: &Decoder,
     directory: &Dir,
-    paths: &[&'a Path],
+    paths: &[(PhotographFormat, &'a Path)],
     size: PreviewSize,
     cancelled: impl Fn() -> bool,
 ) -> Result<Rendered<'a>, DecodeError> {
@@ -106,7 +128,7 @@ fn load_raw<'a>(
 
     let mut first_source = None;
     let mut alternate_paths = Vec::new();
-    for &path in paths {
+    for &(_, path) in paths {
         if cancelled() {
             return Err(Unavailable);
         }
@@ -196,7 +218,7 @@ mod tests {
         codecs::{jpeg::JpegEncoder, openexr::OpenExrEncoder, png::PngEncoder},
     };
 
-    use super::{PreviewSize, load, make_preview};
+    use super::{PreviewSize, load, make_preview, read_summary};
     use crate::image_decode::{Decoder, decode_raster};
     use crate::metadata::{Fields, read_group};
 
@@ -293,6 +315,37 @@ mod tests {
         };
         assert!(has_field(&malformed.fields, "XMP", "No readable metadata"));
         assert!(has_field(&readable.fields, "xmp:Rating", "4"));
+        Ok(())
+    }
+
+    #[test]
+    fn jpeg_summary_is_available_before_pixel_decoding_can_succeed() -> Result<(), Box<dyn Error>> {
+        let folder = tempfile::tempdir()?;
+        let directory = Dir::open_ambient_dir(folder.path(), ambient_authority())?;
+        let paths = [PathBuf::from("photo.jpg")];
+        let mut bytes = Vec::new();
+        let mut jpeg = JpegEncoder::new(&mut bytes);
+        jpeg.set_exif_metadata(model_exif("JPEG camera")?)?;
+        jpeg.encode_image(&RgbImage::new(40, 20))?;
+        let end_of_header = bytes
+            .windows(2)
+            .position(|marker| marker == [0xff, 0xda])
+            .ok_or("missing start of scan")?
+            + 2;
+        directory.write(&paths[0], &bytes[..end_of_header])?;
+
+        let decoder = Decoder::new();
+        let summary = read_summary(&decoder, &directory, &paths, || false).ok_or("no summary")?;
+        assert_eq!(summary.filename, "photo.jpg");
+        assert!(has_field(&summary.fields, "Camera", "JPEG camera"));
+        assert!(has_field(&summary.fields, "Dimensions", "40 × 20"));
+        assert!(
+            load(&decoder, &directory, &paths, PreviewSize::Thumbnail, || {
+                false
+            })
+            .pixels
+            .is_err()
+        );
         Ok(())
     }
 
