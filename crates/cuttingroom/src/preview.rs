@@ -4,24 +4,8 @@ use cap_std::fs::Dir;
 use cr_project::{PhotographFormat, photograph_format};
 use slint::{Rgba8Pixel, SharedPixelBuffer};
 
-use crate::image_decode::{DecodeError, DecodedImage, Decoder, read_image_file};
+use crate::image_decode::{DecodeError, DecodedImage, Decoder, PreviewSize, read_image_file};
 use crate::metadata::{Fields, add_dimensions, add_format, filename};
-
-#[derive(Clone, Copy)]
-pub(crate) enum PreviewSize {
-    Thumbnail,
-    Photo,
-}
-
-impl PreviewSize {
-    fn max_edge(self) -> u32 {
-        match self {
-            Self::Thumbnail => 384,
-            // A square RGBA8 preview fits within the 16 MiB frame upload budget.
-            Self::Photo => 2048,
-        }
-    }
-}
 
 type Pixels = SharedPixelBuffer<Rgba8Pixel>;
 
@@ -96,7 +80,7 @@ fn render<'a>(
             return Err(Unavailable);
         }
         match decoder
-            .raster(directory, path, format, Some(size.max_edge()))
+            .raster(directory, path, format, size)
             .and_then(|image| with_metadata(image, path, size, &cancelled))
         {
             Ok(rendered) => return Ok(rendered),
@@ -134,7 +118,7 @@ fn load_raw<'a>(
             Err(DecoderUnavailable) => return Err(DecoderUnavailable),
             Err(Unavailable) => continue,
         };
-        if let Some(image) = raw.embedded_preview() {
+        if let Some(image) = raw.embedded_preview(size) {
             return with_metadata(image, path, size, &cancelled);
         }
         drop(raw);
@@ -205,6 +189,7 @@ mod tests {
     use std::{error::Error, io::Cursor, path::PathBuf};
 
     use cap_std::{ambient_authority, fs::Dir};
+    use cr_project::PhotographFormat;
     use exif::{Field, In, Tag, Value, experimental::Writer};
     use image::{
         ExtendedColorType, ImageEncoder, ImageFormat, Rgb, RgbImage,
@@ -212,7 +197,7 @@ mod tests {
     };
 
     use super::{PreviewSize, load, make_preview};
-    use crate::image_decode::{Decoder, decode_jpeg, decode_raster};
+    use crate::image_decode::{Decoder, decode_raster};
     use crate::metadata::{Fields, read_group};
 
     const XMP: &str = r#"
@@ -333,6 +318,9 @@ mod tests {
     #[test]
     fn jpeg_thumbnail_preserves_aspect_ratio_and_applies_exif_orientation()
     -> Result<(), Box<dyn Error>> {
+        let folder = tempfile::tempdir()?;
+        let directory = Dir::open_ambient_dir(folder.path(), ambient_authority())?;
+        let path = PathBuf::from("photo.jpg");
         let image = RgbImage::from_fn(800, 400, |x, _| {
             if x < 400 {
                 Rgb([255, 0, 0])
@@ -340,19 +328,35 @@ mod tests {
                 Rgb([0, 0, 255])
             }
         });
-        let mut bytes = Vec::new();
-        let mut encoder = JpegEncoder::new(&mut bytes);
+        let mut encoder = JpegEncoder::new(directory.create(&path)?);
         // EXIF orientation 6 rotates the image 90 degrees clockwise.
         encoder.set_exif_metadata(vec![
             b'I', b'I', 42, 0, 8, 0, 0, 0, 1, 0, 0x12, 1, 3, 0, 1, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0,
         ])?;
         encoder.encode_image(&image)?;
 
-        let full_preview = make_preview(decode_jpeg(Cursor::new(&bytes))?, PreviewSize::Photo)
-            .map_err(|_| "preview failed")?;
+        let decoder = Decoder::new();
+        let decoded = decoder
+            .raster(
+                &directory,
+                &path,
+                PhotographFormat::Jpeg,
+                PreviewSize::Thumbnail,
+            )
+            .map_err(|_| "thumbnail decode failed")?;
+        assert_eq!(decoded.source_dimensions, (800, 400));
+        assert_eq!(decoded.into_display_rgba8(None)?.dimensions(), (200, 400));
+
+        let paths = [path];
+        let full_preview = load(&decoder, &directory, &paths, PreviewSize::Photo, || false)
+            .pixels
+            .map_err(|_| "photo preview failed")?;
         assert_eq!((full_preview.width(), full_preview.height()), (400, 800));
-        let preview = make_preview(decode_jpeg(Cursor::new(bytes))?, PreviewSize::Thumbnail)
-            .map_err(|_| "preview failed")?;
+        let thumbnail = load(&decoder, &directory, &paths, PreviewSize::Thumbnail, || {
+            false
+        });
+        assert!(has_field(&thumbnail.summary, "Dimensions", "800 × 400"));
+        let preview = thumbnail.pixels.map_err(|_| "thumbnail failed")?;
         assert_eq!((preview.width(), preview.height()), (192, 384));
         let first = preview.as_slice().first().ok_or("empty preview")?;
         let last = preview.as_slice().last().ok_or("empty preview")?;

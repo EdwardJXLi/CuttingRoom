@@ -7,7 +7,6 @@ use cap_std::fs::{Dir, File};
 use cr_project::PhotographFormat;
 use image::{
     DynamicImage, ImageDecoder, ImageFormat, ImageReader, Limits, Rgba, RgbaImage,
-    codecs::jpeg::JpegDecoder,
     metadata::{Cicp, Orientation},
 };
 use jxl_image_rs_integration::JxlDecoder;
@@ -18,6 +17,7 @@ use crate::source_file;
 mod heif;
 #[cfg(target_os = "macos")]
 mod image_io;
+mod jpeg;
 mod native_library;
 mod raw;
 
@@ -29,6 +29,22 @@ const MAX_EXIF_BYTES: usize = 1024 * 1024;
 pub(crate) enum DecodeError {
     Unavailable,
     DecoderUnavailable,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum PreviewSize {
+    Thumbnail,
+    Photo,
+}
+
+impl PreviewSize {
+    pub(crate) fn max_edge(self) -> u32 {
+        match self {
+            Self::Thumbnail => 384,
+            // A square RGBA8 preview fits within the 16 MiB frame upload budget.
+            Self::Photo => 2048,
+        }
+    }
 }
 
 pub(crate) struct DecodedImage {
@@ -97,14 +113,17 @@ impl Decoder {
         directory: &Dir,
         path: &Path,
         format: PhotographFormat,
-        max_edge: Option<u32>,
+        size: PreviewSize,
     ) -> Result<DecodedImage, DecodeError> {
         use DecodeError::Unavailable;
         use PhotographFormat::{Avif, Heif, Jpeg, JpegXl, OpenExr, Png, Raw, Tiff, WebP};
 
         let file = source_file::open(directory, path, MAX_SOURCE_BYTES).ok_or(Unavailable)?;
         match format {
-            Jpeg => decode_jpeg(BufReader::new(file).take(MAX_SOURCE_BYTES)),
+            Jpeg => {
+                let bytes = source_file::read(file, MAX_SOURCE_BYTES).ok_or(Unavailable)?;
+                return jpeg::decode(&bytes, size).ok_or(Unavailable);
+            }
             JpegXl => jpeg_xl_decoder(file).and_then(decode_image),
             Png | WebP | OpenExr => decode_raster(BufReader::new(file), raster_format(format)),
             Tiff => {
@@ -114,7 +133,7 @@ impl Decoder {
                 image.metadata = metadata::read_exif(bytes);
                 return Ok(image);
             }
-            Avif | Heif => return self.heif(file, max_edge),
+            Avif | Heif => return self.heif(file, size.max_edge()),
             Raw => return Err(Unavailable),
         }
         .map_err(|_| Unavailable)
@@ -153,9 +172,10 @@ impl Decoder {
                 let bytes = source_file::read(file, MAX_SOURCE_BYTES).ok_or(Unavailable)?;
                 Ok(metadata::read_container(&bytes).details)
             }
-            Jpeg => JpegDecoder::new(BufReader::new(file).take(MAX_SOURCE_BYTES))
-                .map(inspect_decoder)
-                .map_err(|_| Unavailable),
+            Jpeg => {
+                let bytes = source_file::read(file, MAX_SOURCE_BYTES).ok_or(Unavailable)?;
+                jpeg::inspect(&bytes).ok_or(Unavailable)
+            }
             JpegXl => jpeg_xl_decoder(file)
                 .map(inspect_decoder)
                 .map_err(|_| Unavailable),
@@ -165,7 +185,7 @@ impl Decoder {
         }
     }
 
-    fn heif(&self, file: File, max_edge: Option<u32>) -> Result<DecodedImage, DecodeError> {
+    fn heif(&self, file: File, max_edge: u32) -> Result<DecodedImage, DecodeError> {
         use DecodeError::{DecoderUnavailable, Unavailable};
 
         #[cfg(not(target_os = "macos"))]
@@ -175,9 +195,7 @@ impl Decoder {
         }
         let bytes = source_file::read(file, MAX_SOURCE_BYTES).ok_or(Unavailable)?;
         #[cfg(target_os = "macos")]
-        if let Some(mut image) = image_io::decode(&bytes, max_edge.unwrap_or(MAX_IMAGE_EDGE))
-            .map_err(|()| Unavailable)?
-        {
+        if let Some(mut image) = image_io::decode(&bytes, max_edge).map_err(|()| Unavailable)? {
             image.metadata = metadata::read_container(&bytes);
             return Ok(image);
         }
@@ -210,12 +228,6 @@ fn limits() -> Limits {
     limits.max_image_height = Some(MAX_IMAGE_EDGE);
     limits.max_alloc = Some(MAX_DECODE_BYTES);
     limits
-}
-
-pub(super) fn decode_jpeg(reader: impl BufRead + Seek) -> image::ImageResult<DecodedImage> {
-    let mut decoder = JpegDecoder::new(reader)?;
-    decoder.set_limits(limits())?;
-    decode_image(decoder)
 }
 
 fn jpeg_xl_decoder(file: File) -> image::ImageResult<impl ImageDecoder> {

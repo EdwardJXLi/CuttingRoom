@@ -5,6 +5,8 @@ CuttingRoom is a keyboard-driven desktop application for browsing, culling, tagg
 ## Development
 
 Install Rust with rustup. The repository pins the Rust toolchain.
+Install CMake to build the bundled JPEG codec.
+On x86-64, install NASM to enable JPEG SIMD acceleration.
 
 - On Linux, install a C/C++ toolchain, `pkg-config`, and the Fontconfig development headers. Use a Wayland or X11 session.
 - On macOS, install the Xcode Command Line Tools.

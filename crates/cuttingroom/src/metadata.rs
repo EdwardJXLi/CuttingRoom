@@ -5,6 +5,7 @@ use std::{
 };
 
 use exif::{Exif, In, Tag, Value};
+use image::metadata::Orientation;
 
 mod group;
 mod xmp;
@@ -34,10 +35,26 @@ pub(crate) fn read_exif(bytes: Vec<u8>) -> Metadata {
 }
 
 pub(crate) fn read_container(bytes: &[u8]) -> Metadata {
+    container_exif(bytes).map_or_else(Metadata::default, fields)
+}
+
+pub(crate) fn read_jpeg(bytes: &[u8]) -> (Metadata, Orientation) {
+    let Some(exif) = container_exif(bytes) else {
+        return (Metadata::default(), Orientation::NoTransforms);
+    };
+    let orientation = exif
+        .get_field(Tag::Orientation, In::PRIMARY)
+        .and_then(|field| field.value.get_uint(0))
+        .and_then(|value| u8::try_from(value).ok())
+        .and_then(Orientation::from_exif)
+        .unwrap_or(Orientation::NoTransforms);
+    (fields(exif), orientation)
+}
+
+fn container_exif(bytes: &[u8]) -> Option<Exif> {
     exif::Reader::new()
         .read_from_container(&mut Cursor::new(bytes))
         .ok()
-        .map_or_else(Metadata::default, fields)
 }
 
 fn fields(exif: Exif) -> Metadata {

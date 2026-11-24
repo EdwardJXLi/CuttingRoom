@@ -1,6 +1,5 @@
 use std::{
     ffi::{c_int, c_uint, c_void},
-    io::Cursor,
     mem::offset_of,
     ptr::NonNull,
     slice,
@@ -9,7 +8,7 @@ use std::{
 use image::{DynamicImage, GrayImage, RgbImage};
 use libloading::Library;
 
-use super::{DecodedImage, MAX_DECODE_BYTES, decode_jpeg, native_library, valid_dimensions};
+use super::{DecodedImage, MAX_DECODE_BYTES, PreviewSize, jpeg, native_library, valid_dimensions};
 use crate::metadata::{Metadata, add, camera_name, clean_text};
 
 #[cfg(target_os = "linux")]
@@ -145,14 +144,14 @@ impl RawDecoder {
 }
 
 impl<'a> RawImage<'a> {
-    pub(crate) fn embedded_preview(&mut self) -> Option<DecodedImage> {
+    pub(crate) fn embedded_preview(&mut self, size: PreviewSize) -> Option<DecodedImage> {
         // SAFETY: LibRaw successfully opened the context on this worker.
         if unsafe { (self.api.unpack_thumb)(self.context.as_ptr()) } != 0 {
             return None;
         }
         let mut image = self
             .make_image(self.api.make_mem_thumb)?
-            .decode(MAX_EMBEDDED_BYTES)?;
+            .decode(MAX_EMBEDDED_BYTES, size)?;
         if let Some(dimensions) = self.dimensions() {
             image.source_dimensions = dimensions;
         }
@@ -191,7 +190,7 @@ impl<'a> RawImage<'a> {
         let metadata = self.metadata();
         let memory = self.make_image(self.api.make_mem_image)?;
         drop(self);
-        let mut image = memory.decode(MAX_DECODE_BYTES as usize)?;
+        let mut image = memory.decode(MAX_DECODE_BYTES as usize, PreviewSize::Photo)?;
         image.source_dimensions = (width as u32, height as u32);
         image.metadata = metadata;
         Some(image)
@@ -305,7 +304,7 @@ fn positive(value: f32) -> bool {
 }
 
 impl ImageMemory<'_> {
-    fn decode(&self, max_bytes: usize) -> Option<DecodedImage> {
+    fn decode(&self, max_bytes: usize, size: PreviewSize) -> Option<DecodedImage> {
         // SAFETY: The pointer denotes a live LibRaw allocation with this C header.
         let header = unsafe { self.pixels.as_ref() };
         let len = header.data_size as usize;
@@ -323,7 +322,7 @@ impl ImageMemory<'_> {
             slice::from_raw_parts(start, len)
         };
         match header.format {
-            JPEG => decode_jpeg(Cursor::new(data)).ok(),
+            JPEG => jpeg::decode(data, size),
             BITMAP if header.bits == 8 => {
                 let width = u32::from(header.width);
                 let height = u32::from(header.height);

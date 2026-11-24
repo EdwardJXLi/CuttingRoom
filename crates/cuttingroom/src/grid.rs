@@ -23,9 +23,9 @@ use slint::{
 use crate::{
     FullPreview, GridPhoto, GroupDetails, MainWindow, MetadataEntry, MetadataFile, PhotoMetadata,
     PreviewState,
-    image_decode::{DecodeError, Decoder},
+    image_decode::{DecodeError, Decoder, PreviewSize},
     metadata::{Fields, GroupMetadata, MetadataSource, read_group},
-    preview::{self, Preview, PreviewSize},
+    preview::{self, Preview},
 };
 
 const MAX_VISIBLE_PREVIEWS: usize = 192;
