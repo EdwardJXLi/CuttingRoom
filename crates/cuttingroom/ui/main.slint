@@ -10,6 +10,14 @@ import { PhotoWorkspace } from "workspace.slint";
 
 export { ActiveSummary, FullPreview, GridPhoto, GroupDetails, MetadataEntry, MetadataFile, PhotoMetadata, PreviewState, Message, MessageSeverity }
 
+export struct ThumbnailProgress {
+    total: int,
+    generated: int,
+    finished: int,
+    cached: int,
+    incomplete: bool,
+}
+
 import "assets/fonts/NotoSans-Regular.ttf";
 import "assets/fonts/NotoSans-SemiBold.ttf";
 
@@ -37,7 +45,10 @@ export component MainWindow inherits Window {
     in property <string> status-text;
     in property <bool> project-open;
     in property <bool> scan-active;
+    in property <bool> thumbnail-reset-active;
+    in property <ThumbnailProgress> thumbnail-progress;
     callback rescan-folder();
+    callback rebuild-thumbnail-cache();
     callback message-dismissed(accepted: bool);
     callback grid-viewport-changed(int, int);
     callback active-photo-changed();
@@ -47,6 +58,10 @@ export component MainWindow inherits Window {
     private property <bool> show-inspector: true;
     private property <Message> current-message;
     private property <bool> popup-open: message-dialog.is-open || about.is-open;
+    private property <bool> generating-thumbnails: !root.scan-active && !root.thumbnail-reset-active
+        && root.thumbnail-progress.generated < root.thumbnail-progress.total;
+    private property <bool> saving-thumbnails: !root.scan-active && !root.thumbnail-reset-active
+        && !root.generating-thumbnails && root.thumbnail-progress.finished < root.thumbnail-progress.total;
 
     forward-focus: navigation;
     init => { navigation.focus(); }
@@ -103,8 +118,13 @@ export component MainWindow inherits Window {
             MenuItem {
                 title: "Rescan Folder";
                 shortcut: @keys(Control + R);
-                enabled: root.project-open && !root.scan-active && !root.popup-open;
+                enabled: root.project-open && !root.scan-active && !root.thumbnail-reset-active && !root.popup-open;
                 activated => { root.rescan-folder(); }
+            }
+            MenuItem {
+                title: "Rebuild Thumbnail Cache";
+                enabled: root.project-open && !root.scan-active && !root.thumbnail-reset-active && !root.popup-open;
+                activated => { root.rebuild-thumbnail-cache(); }
             }
             MenuItem { title: "Export Metadata"; enabled: false; }
             MenuSeparator {}
@@ -208,15 +228,30 @@ export component MainWindow inherits Window {
                     overflow: elide;
                 }
 
-                if root.scan-active: Rectangle {
+                if !root.scan-active && !root.thumbnail-reset-active && (root.generating-thumbnails || root.saving-thumbnails || root.thumbnail-progress.incomplete
+                    || root.thumbnail-progress.cached < root.thumbnail-progress.total): Text {
+                    text: root.generating-thumbnails ? "Generating Thumbnails"
+                        : root.saving-thumbnails ? "Saving Thumbnail Previews"
+                        : root.thumbnail-progress.incomplete ? "Some thumbnails could not be cached"
+                        : "Cached \{root.thumbnail-progress.cached} of \{root.thumbnail-progress.total} thumbnails";
+                    color: Palette.muted;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                }
+
+                if root.scan-active || root.thumbnail-reset-active || root.generating-thumbnails || root.saving-thumbnails: Rectangle {
                     width: 144px;
 
                     ProgressIndicator {
                         width: 100%;
                         height: 5px;
                         y: (parent.height - self.height) / 2;
-                        indeterminate: true;
-                        accessible-label: "Folder scan";
+                        indeterminate: root.scan-active || root.thumbnail-reset-active;
+                        progress: (root.saving-thumbnails ? root.thumbnail-progress.finished
+                            : root.thumbnail-progress.generated) / max(1, root.thumbnail-progress.total);
+                        accessible-label: root.scan-active ? "Folder scan"
+                            : root.thumbnail-reset-active ? "Clearing thumbnail cache"
+                            : root.saving-thumbnails ? "Saving Thumbnail Previews" : "Generating Thumbnails";
                     }
                 }
             }

@@ -17,7 +17,7 @@ use crate::{
     storage::{FileId, ProjectLock, Storage, publish},
 };
 
-pub use inventory::{PhotographGroup, PhotographList};
+pub use inventory::{PhotographGroup, PhotographList, UnlistedPhotographs};
 pub use scan::{PhotographFormat, photograph_format};
 
 #[derive(Debug, Error)]

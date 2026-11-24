@@ -9,6 +9,7 @@ use crate::metadata::{Fields, MetadataSource, add_dimensions, add_format, filena
 
 type Pixels = SharedPixelBuffer<Rgba8Pixel>;
 
+#[derive(Clone)]
 pub(crate) struct Preview {
     pub(crate) pixels: Result<Pixels, DecodeError>,
     pub(crate) filename: String,

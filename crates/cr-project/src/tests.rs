@@ -187,6 +187,91 @@ fn retains_complete_groups_and_separate_file_records() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn pages_complete_unlisted_groups_without_listing_them_twice() -> TestResult {
+    let folder = tempdir()?;
+    let root = folder.path();
+    for number in (0..65).rev() {
+        fs::write(root.join(format!("capture-{number:02}.CR2")), b"raw")?;
+    }
+    for number in 0..65 {
+        fs::write(root.join(format!("capture-{number:02}.JPG")), b"jpeg")?;
+    }
+
+    let project = ready(root)?;
+    let spool_exists = || -> std::io::Result<bool> {
+        for entry in fs::read_dir(root.join(".cuttingroom"))? {
+            if entry?
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".thumbnail-inventory-")
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    };
+    let (_, unlisted) = project.sync_photographs_for_thumbnails(65, || false, |_| {})?;
+    assert!(unlisted.is_none());
+    assert!(!spool_exists()?);
+
+    let (listing, unlisted) = project.sync_photographs_for_thumbnails(1, || false, |_| {})?;
+    assert_eq!(listing.total, 130);
+    assert!(listing.has_more);
+    assert_eq!(listing.groups.len(), 1);
+    assert_eq!(
+        listing.groups[0].files,
+        ["capture-00.CR2", "capture-00.JPG"].map(Path::new)
+    );
+
+    let mut unlisted = unlisted.ok_or("expected the rest of the inventory")?;
+    assert_eq!(unlisted.total(), 64);
+    assert!(spool_exists()?);
+    assert!(matches!(
+        project.sync_photographs_for_thumbnails(1, || true, |_| {}),
+        Err(OpenError::ScanCancelled)
+    ));
+    let mut number = 1;
+    for _ in 0..2 {
+        assert!(!unlisted.is_finished());
+        let page = unlisted.next_batch()?;
+        assert_eq!(page.len(), 32);
+        for group in page {
+            let stem = format!("capture-{number:02}");
+            assert_eq!(group.stem, Path::new(&stem));
+            assert_eq!(
+                group.files,
+                ["CR2", "JPG"].map(|extension| Path::new(&stem).with_extension(extension))
+            );
+            number += 1;
+        }
+    }
+    assert!(unlisted.is_finished());
+    assert!(unlisted.next_batch()?.is_empty());
+    drop(unlisted);
+    assert!(!spool_exists()?);
+    Ok(())
+}
+
+#[test]
+fn unlisted_groups_preserve_opaque_stems() -> TestResult {
+    let folder = tempdir()?;
+    let root = folder.path();
+    for name in ["..jpg", "...CR2"] {
+        fs::write(root.join(name), b"photo")?;
+    }
+
+    let project = ready(root)?;
+    let (_, unlisted) = project.sync_photographs_for_thumbnails(0, || false, |_| {})?;
+    let groups = unlisted.ok_or("expected unlisted photos")?.next_batch()?;
+    let [group] = groups.as_slice() else {
+        return Err("expected one group for the shared opaque stem".into());
+    };
+    assert_eq!(group.stem, Path::new(".."));
+    assert_eq!(group.files, ["...CR2", "..jpg"].map(Path::new));
+    Ok(())
+}
+
 fn listed_paths(listing: PhotographList) -> Vec<PathBuf> {
     listing
         .groups
@@ -210,7 +295,11 @@ fn cancelled_rescan_preserves_the_previous_inventory() -> TestResult {
     }
 
     let found = Cell::new(0);
-    let result = project.sync_photographs(10, || found.get() >= 280, |count| found.set(count));
+    let result = project.sync_photographs_for_thumbnails(
+        10,
+        || found.get() >= 280,
+        |count| found.set(count),
+    );
     assert!(matches!(result, Err(OpenError::ScanCancelled)));
     assert_eq!(fs::read(root.join(DATABASE))?, before);
     Ok(())
@@ -233,6 +322,18 @@ fn retains_distinct_non_unicode_names() -> TestResult {
         listed_paths(listing),
         [b"IMG_\xfe.jpg", b"IMG_\xff.jpg"].map(|name| Path::new(OsStr::from_bytes(name)))
     );
+    let (listing, unlisted) =
+        ready(folder.path())?.sync_photographs_for_thumbnails(1, || false, |_| {})?;
+    assert_eq!(
+        listed_paths(listing),
+        [Path::new(OsStr::from_bytes(b"IMG_\xfe.jpg"))]
+    );
+    let mut unlisted = unlisted.ok_or("expected unlisted group")?;
+    let groups = unlisted.next_batch()?;
+    let [group] = groups.as_slice() else {
+        return Err("expected one unlisted group".into());
+    };
+    assert_eq!(group.files, [Path::new(OsStr::from_bytes(b"IMG_\xff.jpg"))]);
     let db = Connection::open(folder.path().join(DATABASE))?;
     let mut query = db.prepare("SELECT path FROM photos ORDER BY path")?;
     let payloads = query

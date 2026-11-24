@@ -21,11 +21,14 @@ mod jpeg;
 mod native_library;
 mod raw;
 
+pub(crate) use jpeg::decode_cached_thumbnail;
+
 const MAX_IMAGE_EDGE: u32 = 16_384;
 const MAX_DECODE_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_SOURCE_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_EXIF_BYTES: usize = 1024 * 1024;
 
+#[derive(Clone, Copy)]
 pub(crate) enum DecodeError {
     Unavailable,
     DecoderUnavailable,

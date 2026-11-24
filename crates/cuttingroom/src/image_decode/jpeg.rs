@@ -143,6 +143,17 @@ pub(super) fn decode(bytes: &[u8], size: PreviewSize) -> Option<DecodedImage> {
     })
 }
 
+pub(crate) fn decode_cached_thumbnail(bytes: &[u8]) -> Option<RgbaImage> {
+    let mut decoder = Decompressor::open(bytes)?;
+    let (width, height) = decoder.dimensions()?;
+    if width.max(height) > PreviewSize::Thumbnail.max_edge() {
+        return None;
+    }
+    decoder
+        .rgba(PreviewSize::Thumbnail)
+        .map(|(pixels, _)| pixels)
+}
+
 pub(super) fn inspect(mut reader: impl Read + Seek) -> Option<Metadata> {
     let mut marker = [0; 2];
     reader.read_exact(&mut marker).ok()?;

@@ -16,6 +16,11 @@ use crate::{
     schema::{SCHEMA, connect, inspect},
 };
 
+mod unlisted;
+
+pub use unlisted::UnlistedPhotographs;
+use unlisted::UnlistedWriter;
+
 diesel::table! {
     photos (id) {
         id -> Text,
@@ -51,6 +56,30 @@ impl Project {
         cancelled: impl Fn() -> bool,
         progress: impl FnMut(i64),
     ) -> Result<PhotographList, OpenError> {
+        self.sync_inventory(list_limit, cancelled, progress, false)
+            .map(|(listing, _)| listing)
+    }
+
+    /// Reconcile the inventory and return a cursor for groups outside the listing.
+    ///
+    /// Keep the cursor on the project worker. Replace it after a successful scan.
+    /// If the listing has more groups and the cursor is absent, the spool failed.
+    pub fn sync_photographs_for_thumbnails(
+        &self,
+        list_limit: u32,
+        cancelled: impl Fn() -> bool,
+        progress: impl FnMut(i64),
+    ) -> Result<(PhotographList, Option<UnlistedPhotographs>), OpenError> {
+        self.sync_inventory(list_limit, cancelled, progress, true)
+    }
+
+    fn sync_inventory(
+        &self,
+        list_limit: u32,
+        cancelled: impl Fn() -> bool,
+        progress: impl FnMut(i64),
+        record_unlisted: bool,
+    ) -> Result<(PhotographList, Option<UnlistedPhotographs>), OpenError> {
         self.storage
             .check_database_header(self.file_id, SCHEMA.version)?;
         let mut db = connect(&self.storage.database)?;
@@ -64,12 +93,18 @@ impl Project {
             diesel::update(photos::table.filter(photos::present.eq(true)))
                 .set(photos::present.eq(false))
                 .execute(db)?;
-            let listing = self.record_photographs(db, list_limit as usize, &cancelled, progress)?;
+            let inventory = self.record_photographs(
+                db,
+                list_limit as usize,
+                &cancelled,
+                progress,
+                record_unlisted,
+            )?;
             self.storage.revalidate(Some(self.file_id))?;
             if cancelled() {
                 return Err(OpenError::ScanCancelled);
             }
-            Ok(listing)
+            Ok(inventory)
         })
     }
 
@@ -79,8 +114,10 @@ impl Project {
         list_limit: usize,
         cancelled: impl Fn() -> bool,
         mut progress: impl FnMut(i64),
-    ) -> Result<PhotographList, OpenError> {
+        record_unlisted: bool,
+    ) -> Result<(PhotographList, Option<UnlistedPhotographs>), OpenError> {
         let mut batch = Vec::with_capacity(BATCH_SIZE);
+        let mut unlisted = None;
         let mut groups: BTreeMap<_, Vec<PathBuf>> = BTreeMap::new();
         let mut total = 0;
         let mut has_more = false;
@@ -96,23 +133,33 @@ impl Project {
             }
             total += 1;
             progress(total);
-            if list_limit > 0 {
-                let stem = path.with_extension("");
-                let key = (stem.to_string_lossy().into_owned(), stem);
-                groups.entry(key).or_default().push(path);
-                if groups.len() > list_limit {
-                    groups.pop_last();
-                    has_more = true;
-                }
-            } else {
+            if list_limit == 0 && !record_unlisted {
                 has_more = true;
+                continue;
+            }
+            let stem = path.with_extension("");
+            let key = (stem.to_string_lossy().into_owned(), stem);
+            groups.entry(key).or_default().push(path);
+            if groups.len() > list_limit
+                && let Some(((_, stem), paths)) = groups.pop_last()
+            {
+                // The largest listed key can only decrease once the list is full.
+                if !has_more && record_unlisted {
+                    unlisted = UnlistedWriter::start(self).ok();
+                }
+                has_more = true;
+                if let Some(writer) = &mut unlisted
+                    && writer.append(&stem, paths).is_err()
+                {
+                    unlisted = None;
+                }
             }
         }
         if cancelled() {
             return Err(OpenError::ScanCancelled);
         }
         upsert_photos(db, &batch)?;
-        Ok(PhotographList {
+        let listing = PhotographList {
             total,
             groups: groups
                 .into_iter()
@@ -122,7 +169,8 @@ impl Project {
                 })
                 .collect(),
             has_more,
-        })
+        };
+        Ok((listing, unlisted.and_then(|writer| writer.finish().ok())))
     }
 }
 

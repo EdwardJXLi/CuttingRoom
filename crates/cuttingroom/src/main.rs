@@ -9,6 +9,7 @@ mod interrupt;
 mod metadata;
 mod preview;
 mod source_file;
+mod thumbnail_cache;
 
 #[cfg(target_os = "macos")]
 mod macos {
