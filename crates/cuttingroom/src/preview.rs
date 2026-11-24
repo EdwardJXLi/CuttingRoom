@@ -20,32 +20,70 @@ struct Rendered<'a> {
     path: &'a Path,
     pixels: Pixels,
     summary: Fields,
+    source_dimensions: (u32, u32),
 }
 
-pub(crate) fn load(
+pub(crate) struct PhotoPreview {
+    pub(crate) preview: Preview,
+    pub(crate) source_dimensions: Option<(u32, u32)>,
+}
+
+pub(crate) fn load_thumbnail(
     decoder: &Decoder,
     directory: &Dir,
     paths: &[PathBuf],
-    size: PreviewSize,
     cancelled: impl Fn() -> bool,
 ) -> Preview {
     let sources = ordered_sources(paths);
+    let preferred = sources.first().map(|(_, path)| *path);
     let (rasters, raws) =
         sources.split_at(sources.partition_point(|(format, _)| *format != PhotographFormat::Raw));
-    let preferred = match size {
-        PreviewSize::Photo => raws.first().or(rasters.first()),
-        PreviewSize::Thumbnail => sources.first(),
-    };
-    match render(decoder, directory, rasters, raws, size, cancelled) {
+    finish_preview(
+        render_thumbnail(decoder, directory, rasters, raws, cancelled),
+        preferred,
+    )
+}
+
+pub(crate) fn preferred_photo_file(paths: &[PathBuf]) -> Option<usize> {
+    paths
+        .iter()
+        .enumerate()
+        .filter_map(|(index, path)| Some((index, photograph_format(path)?)))
+        .min_by_key(|(_, format)| {
+            (
+                *format != PhotographFormat::Raw,
+                thumbnail_priority(*format),
+            )
+        })
+        .map(|(index, _)| index)
+}
+
+pub(crate) fn load_photo(
+    decoder: &Decoder,
+    directory: &Dir,
+    paths: &[PathBuf],
+    selected_file: usize,
+    cancelled: impl Fn() -> bool,
+) -> PhotoPreview {
+    let path = paths.get(selected_file).map(PathBuf::as_path);
+    let rendered = path
+        .ok_or(DecodeError::Unavailable)
+        .and_then(|path| render_photo(decoder, directory, path, cancelled));
+    PhotoPreview {
+        source_dimensions: rendered.as_ref().ok().map(|image| image.source_dimensions),
+        preview: finish_preview(rendered, path),
+    }
+}
+
+fn finish_preview(rendered: Result<Rendered<'_>, DecodeError>, source: Option<&Path>) -> Preview {
+    match rendered {
         Ok(rendered) => Preview {
             filename: filename(rendered.path),
             pixels: Ok(rendered.pixels),
             summary: rendered.summary,
         },
         Err(error) => Preview {
-            filename: preferred
-                .map(|(_, path)| filename(path))
-                .unwrap_or_default(),
+            filename: source.map(filename).unwrap_or_default(),
             pixels: Err(error),
             summary: Fields::new(),
         },
@@ -75,41 +113,38 @@ pub(crate) fn read_summary(
 }
 
 fn ordered_sources(paths: &[PathBuf]) -> Vec<(PhotographFormat, &Path)> {
-    use PhotographFormat::{Jpeg, Png, Raw, Tiff};
-
     let mut sources: Vec<_> = paths
         .iter()
         .map(PathBuf::as_path)
         .filter_map(|path| Some((photograph_format(path)?, path)))
         .collect();
-    sources.sort_by_key(|(format, _)| match format {
+    sources.sort_by_key(|(format, _)| thumbnail_priority(*format));
+    sources
+}
+
+fn thumbnail_priority(format: PhotographFormat) -> u8 {
+    use PhotographFormat::{Jpeg, Png, Raw, Tiff};
+
+    match format {
         Jpeg => 0,
         Png => 1,
         Tiff => 2,
         Raw => 4,
         _ => 3,
-    });
-    sources
+    }
 }
 
-fn render<'a>(
+fn render_thumbnail<'a>(
     decoder: &Decoder,
     directory: &Dir,
     rasters: &[(PhotographFormat, &'a Path)],
     raws: &[(PhotographFormat, &'a Path)],
-    size: PreviewSize,
     cancelled: impl Fn() -> bool,
 ) -> Result<Rendered<'a>, DecodeError> {
     use DecodeError::{DecoderUnavailable, Unavailable};
 
     let mut error = Unavailable;
-    if matches!(size, PreviewSize::Photo) {
-        match load_raw_photo(decoder, directory, raws, &cancelled) {
-            Ok(rendered) => return Ok(rendered),
-            Err(DecoderUnavailable) => error = DecoderUnavailable,
-            Err(Unavailable) => (),
-        }
-    }
+    let size = PreviewSize::Thumbnail;
     for &(format, path) in rasters {
         if cancelled() {
             return Err(Unavailable);
@@ -124,50 +159,31 @@ fn render<'a>(
         }
     }
 
-    match size {
-        PreviewSize::Photo => Err(error),
-        PreviewSize::Thumbnail => match load_raw_thumbnail(decoder, directory, raws, &cancelled) {
-            Err(Unavailable) => Err(error),
-            result => result,
-        },
+    match load_raw_thumbnail(decoder, directory, raws, &cancelled) {
+        Err(Unavailable) => Err(error),
+        result => result,
     }
 }
 
-fn load_raw_photo<'a>(
+fn render_photo<'a>(
     decoder: &Decoder,
     directory: &Dir,
-    paths: &[(PhotographFormat, &'a Path)],
+    path: &'a Path,
     cancelled: impl Fn() -> bool,
 ) -> Result<Rendered<'a>, DecodeError> {
-    use DecodeError::{DecoderUnavailable, Unavailable};
-
+    use DecodeError::Unavailable;
     let size = PreviewSize::Photo;
-    for &(_, path) in paths {
-        if cancelled() {
-            return Err(Unavailable);
-        }
-        let Some(bytes) = read_image_file(directory, path) else {
-            continue;
-        };
-        let raw = match decoder.raw(&bytes) {
-            Ok(raw) => raw,
-            Err(DecoderUnavailable) => return Err(DecoderUnavailable),
-            Err(Unavailable) => continue,
-        };
-        let finish = |image| with_metadata(image, path, size, &cancelled).ok();
-        if let Some(rendered) = raw.render(&cancelled).and_then(finish) {
-            return Ok(rendered);
-        }
-        if cancelled() {
-            return Err(Unavailable);
-        }
-        if let Ok(mut raw) = decoder.raw(&bytes)
-            && let Some(rendered) = raw.embedded_preview(size).and_then(finish)
-        {
-            return Ok(rendered);
-        }
+    if cancelled() {
+        return Err(Unavailable);
     }
-    Err(Unavailable)
+    let image = match photograph_format(path).ok_or(Unavailable)? {
+        PhotographFormat::Raw => {
+            let bytes = read_image_file(directory, path).ok_or(Unavailable)?;
+            decoder.raw(&bytes)?.render(&cancelled).ok_or(Unavailable)?
+        }
+        format => decoder.raster(directory, path, format, size)?,
+    };
+    with_metadata(image, path, size, &cancelled)
 }
 
 fn load_raw_thumbnail<'a>(
@@ -238,12 +254,14 @@ fn with_metadata(
         return Err(DecodeError::Unavailable);
     }
     let mut summary = std::mem::take(&mut image.metadata.summary);
-    add_dimensions(&mut summary, image.source_dimensions);
+    let source_dimensions = image.source_dimensions;
+    add_dimensions(&mut summary, source_dimensions);
     add_format(&mut summary, path);
     Ok(Rendered {
         path,
         pixels: make_preview(image, size)?,
         summary,
+        source_dimensions,
     })
 }
 
@@ -271,7 +289,9 @@ mod tests {
         codecs::{jpeg::JpegEncoder, openexr::OpenExrEncoder, png::PngEncoder},
     };
 
-    use super::{PreviewSize, load, make_preview, read_summary};
+    use super::{
+        PreviewSize, load_photo, load_thumbnail, make_preview, preferred_photo_file, read_summary,
+    };
     use crate::image_decode::{Decoder, decode_raster};
     use crate::metadata::{Fields, read_group};
 
@@ -310,9 +330,7 @@ mod tests {
         directory.write("photo.xmp", XMP.replace("Rating=\"4\"", "Rating=\"5\""))?;
 
         let decoder = Decoder::new();
-        let preview = load(&decoder, &directory, &paths, PreviewSize::Thumbnail, || {
-            false
-        });
+        let preview = load_thumbnail(&decoder, &directory, &paths, || false);
         assert!(preview.pixels.is_ok());
         assert_eq!(preview.filename, "photo.jpg");
         assert!(has_field(&preview.summary, "Camera", "JPEG camera"));
@@ -338,7 +356,7 @@ mod tests {
         assert_eq!(directory.read_to_string("trip/photo.png.xmp")?, XMP);
 
         directory.write(&paths[0], "Unreadable image")?;
-        let fallback = load(&decoder, &directory, &paths, PreviewSize::Photo, || false);
+        let fallback = load_thumbnail(&decoder, &directory, &paths, || false);
         assert!(fallback.pixels.is_ok());
         assert_eq!(fallback.filename, "photo.png");
         assert!(has_field(&fallback.summary, "Camera", "PNG camera"));
@@ -356,7 +374,7 @@ mod tests {
 
         let decoder = Decoder::new();
         let paths = [PathBuf::from("photo.jpg")];
-        let preview = load(&decoder, &directory, &paths, PreviewSize::Photo, || false);
+        let preview = load_photo(&decoder, &directory, &paths, 0, || false).preview;
         assert!(preview.pixels.is_err());
         let metadata = read_group(&decoder, &directory, &paths, || false);
         let [photo] = metadata.files.as_slice() else {
@@ -393,11 +411,9 @@ mod tests {
         assert!(has_field(&summary.fields, "Camera", "JPEG camera"));
         assert!(has_field(&summary.fields, "Dimensions", "40 × 20"));
         assert!(
-            load(&decoder, &directory, &paths, PreviewSize::Thumbnail, || {
-                false
-            })
-            .pixels
-            .is_err()
+            load_thumbnail(&decoder, &directory, &paths, || false)
+                .pixels
+                .is_err()
         );
         Ok(())
     }
@@ -454,13 +470,12 @@ mod tests {
         assert_eq!(decoded.into_display_rgba8(None)?.dimensions(), (200, 400));
 
         let paths = [path];
-        let full_preview = load(&decoder, &directory, &paths, PreviewSize::Photo, || false)
+        let full_preview = load_photo(&decoder, &directory, &paths, 0, || false)
+            .preview
             .pixels
             .map_err(|_| "photo preview failed")?;
         assert_eq!((full_preview.width(), full_preview.height()), (400, 800));
-        let thumbnail = load(&decoder, &directory, &paths, PreviewSize::Thumbnail, || {
-            false
-        });
+        let thumbnail = load_thumbnail(&decoder, &directory, &paths, || false);
         assert!(has_field(&thumbnail.summary, "Dimensions", "800 × 400"));
         let preview = thumbnail.pixels.map_err(|_| "thumbnail failed")?;
         assert_eq!((preview.width(), preview.height()), (192, 384));
@@ -472,19 +487,55 @@ mod tests {
     }
 
     #[test]
-    fn photo_preview_falls_back_to_a_high_resolution_jpeg() -> Result<(), Box<dyn Error>> {
+    fn photo_preview_reports_original_and_rendered_dimensions() -> Result<(), Box<dyn Error>> {
         let folder = tempfile::tempdir()?;
         let directory = Dir::open_ambient_dir(folder.path(), ambient_authority())?;
-        let paths = [PathBuf::from("photo.dng"), PathBuf::from("photo.jpg")];
-        directory.write(&paths[0], b"unreadable RAW")?;
-        JpegEncoder::new(directory.create(&paths[1])?).encode_image(&RgbImage::new(9000, 450))?;
+        let paths = [PathBuf::from("photo.jpg")];
+        JpegEncoder::new(directory.create(&paths[0])?).encode_image(&RgbImage::new(9000, 450))?;
 
         let decoder = Decoder::new();
-        let photo = load(&decoder, &directory, &paths, PreviewSize::Photo, || false);
+        let photo = load_photo(&decoder, &directory, &paths, 0, || false);
+        assert_eq!(photo.source_dimensions, Some((9000, 450)));
+        let photo = photo.preview;
         assert_eq!(photo.filename, "photo.jpg");
         assert!(has_field(&photo.summary, "Dimensions", "9000 × 450"));
-        let pixels = photo.pixels.map_err(|_| "JPEG fallback failed")?;
+        let pixels = photo.pixels.map_err(|_| "JPEG preview failed")?;
         assert_eq!((pixels.width(), pixels.height()), (8192, 409));
+        Ok(())
+    }
+
+    #[test]
+    fn failed_default_preview_stays_on_the_raw_file_until_another_is_selected()
+    -> Result<(), Box<dyn Error>> {
+        let folder = tempfile::tempdir()?;
+        let directory = Dir::open_ambient_dir(folder.path(), ambient_authority())?;
+        let paths = [
+            PathBuf::from("photo.jpg"),
+            PathBuf::from("photo.png"),
+            PathBuf::from("photo.dng"),
+        ];
+        JpegEncoder::new(directory.create(&paths[0])?).encode_image(&RgbImage::new(4, 2))?;
+        let pixels = RgbImage::new(12, 8);
+        PngEncoder::new(directory.create(&paths[1])?).write_image(
+            pixels.as_raw(),
+            12,
+            8,
+            ExtendedColorType::Rgb8,
+        )?;
+        directory.write(&paths[2], b"unreadable RAW")?;
+
+        let decoder = Decoder::new();
+        assert_eq!(preferred_photo_file(&paths[..2]), Some(0));
+        let default = preferred_photo_file(&paths).ok_or("missing default preview source")?;
+        let failed = load_photo(&decoder, &directory, &paths, default, || false);
+        assert_eq!(failed.preview.filename, "photo.dng");
+        assert!(failed.preview.pixels.is_err());
+
+        let selected = load_photo(&decoder, &directory, &paths, 1, || false);
+        assert_eq!(selected.preview.filename, "photo.png");
+        assert!(has_field(&selected.preview.summary, "Dimensions", "12 × 8"));
+        let pixels = selected.preview.pixels.map_err(|_| "selected PNG failed")?;
+        assert_eq!((pixels.width(), pixels.height()), (12, 8));
         Ok(())
     }
 

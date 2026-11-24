@@ -1,8 +1,14 @@
+import { Spinner } from "std-widgets.slint";
 import { GridPhoto, PhotoMetadata, PreviewState } from "photo-grid.slint";
 import { Palette } from "theme.slint";
 
 export struct FullPreview {
     index: int,
+    requested-file: int,
+    source-format: string,
+    source-width: int,
+    source-height: int,
+    render-time-ms: int,
     image: image,
     state: PreviewState,
     metadata: PhotoMetadata,
@@ -15,29 +21,63 @@ export component PhotoCanvas inherits Rectangle {
 
     private property <bool> has-active-photo: root.active-index >= 0 && root.active-index < root.photos.length;
     private property <GridPhoto> photo: root.photos[root.active-index];
-    private property <PreviewState> state: root.preview.index == root.active-index
-        ? root.preview.state : PreviewState.pending;
-    private property <bool> show-thumbnail: root.state == PreviewState.pending && root.photo.state == PreviewState.ready;
+    private property <bool> current-preview: root.preview.index == root.active-index;
+    private property <PreviewState> state: root.current-preview ? root.preview.state : PreviewState.pending;
+    private property <bool> pending: root.has-active-photo && root.state == PreviewState.pending;
+    private property <bool> ready: root.has-active-photo && root.state == PreviewState.ready;
+    private property <bool> show-thumbnail: root.pending && root.photo.state == PreviewState.ready;
+    private property <string> format: root.current-preview ? root.preview.source-format : "";
+    private property <string> render-time: root.preview.render-time-ms < 1 ? "<1 ms" : "\{root.preview.render-time-ms} ms";
+    private property <bool> different-source-size: root.preview.source-width > 0 && root.preview.source-height > 0
+        && (max(root.preview.source-width, root.preview.source-height) != max(root.preview.image.width, root.preview.image.height)
+            || min(root.preview.source-width, root.preview.source-height) != min(root.preview.image.width, root.preview.image.height));
 
-    if root.has-active-photo && (root.state == PreviewState.ready || root.show-thumbnail): Image {
+    if root.ready || root.show-thumbnail: Image {
         x: 20px;
         y: 16px;
         width: parent.width - 40px;
         height: parent.height - 32px;
         source: root.show-thumbnail ? root.photo.preview : root.preview.image;
         image-fit: contain;
-        accessible-label: root.photo.relative-path;
+        accessible-label: root.show-thumbnail ? root.photo.metadata.filename : root.preview.metadata.filename;
     }
 
-    if !root.has-active-photo || (root.state != PreviewState.ready && !root.show-thumbnail): Text {
+    if !root.pending && !root.ready: Text {
         width: 100%;
         height: 100%;
         text: !root.has-active-photo ? "No photo selected"
-            : root.state == PreviewState.pending ? "Loading preview…"
-            : root.state == PreviewState.decoder-unavailable ? "Preview decoder unavailable"
-            : "Preview unavailable";
+            : root.state == PreviewState.decoder-unavailable ? "No \{root.format} decoder available"
+            : "Could not render \{root.format} preview";
         color: Palette.muted;
         horizontal-alignment: center;
         vertical-alignment: center;
+    }
+
+    if root.pending: Spinner {
+        width: 30px;
+        height: 30px;
+        indeterminate: true;
+        accessible-label: "Rendering high-resolution preview";
+    }
+
+    if root.pending || root.ready: Rectangle {
+        x: 20px;
+        y: parent.height - self.height - 16px;
+        width: min(parent.width - 40px, status.preferred-width + 16px);
+        height: root.ready && root.different-source-size ? 40px : 24px;
+        background: Palette.panel;
+
+        status := Text {
+            x: 8px;
+            width: parent.width - 16px;
+            height: parent.height;
+            text: root.pending ? (root.format == "" ? "Rendering high-resolution preview…" : "Rendering \{root.format} preview…")
+                : "Rendered \{root.format} at \{root.preview.image.width} × \{root.preview.image.height} in \{root.render-time}"
+                    + (root.different-source-size ? "\nSource \{root.preview.source-width} × \{root.preview.source-height}" : "");
+            color: Palette.muted;
+            font-size: 12px;
+            vertical-alignment: center;
+            overflow: elide;
+        }
     }
 }

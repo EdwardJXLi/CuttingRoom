@@ -3,12 +3,12 @@ import { ProgressIndicator } from "std-widgets.slint";
 import { BottomBar } from "bottom-bar.slint";
 import { Message, MessageDialog, MessageSeverity } from "message-dialog.slint";
 import { FullPreview } from "photo-canvas.slint";
-import { ActiveSummary, GridPhoto, GroupDetails, MetadataEntry, MetadataFile, PhotoMetadata, PreviewState } from "photo-grid.slint";
+import { ActiveSummary, GroupDetails, GridPhoto, MetadataEntry, MetadataFile, PhotoMetadata, PreviewState } from "photo-grid.slint";
 import { Palette } from "theme.slint";
 import { WorkspaceHeader, WorkspaceView } from "workspace-header.slint";
 import { PhotoWorkspace } from "workspace.slint";
 
-export { ActiveSummary, FullPreview, GridPhoto, GroupDetails, MetadataEntry, MetadataFile, PhotoMetadata, PreviewState, Message, MessageSeverity }
+export { ActiveSummary, GroupDetails, FullPreview, GridPhoto, MetadataEntry, MetadataFile, PhotoMetadata, PreviewState, Message, MessageSeverity }
 
 export struct ThumbnailProgress {
     total: int,
@@ -35,7 +35,7 @@ export component MainWindow inherits Window {
     in property <string> project-title: "No project open";
     in property <[StandardListViewItem]> photo-files;
     in property <[GridPhoto]> grid-photos;
-    in property <FullPreview> full-preview: { index: -1 };
+    in property <FullPreview> full-preview: { index: -1, requested-file: -1 };
     in property <ActiveSummary> active-summary: { index: -1 };
     in property <GroupDetails> group-details: { index: -1 };
     out property <bool> metadata-summary-visible: workspace.metadata-summary-visible;
@@ -52,6 +52,7 @@ export component MainWindow inherits Window {
     callback message-dismissed(accepted: bool);
     callback thumbnail-viewport-changed(int, int);
     callback active-photo-changed();
+    callback preview-file-selected(int, int);
     private property <WorkspaceView> view: WorkspaceView.grid;
     private property <bool> show-project-info: true;
     private property <bool> show-filmstrip: true;
@@ -211,6 +212,7 @@ export component MainWindow inherits Window {
                 group-details: root.group-details;
                 active-index <=> root.active-index;
                 thumbnail-viewport-changed(first, end) => { root.thumbnail-viewport-changed(first, end); }
+                preview-file-selected(index, file) => { root.preview-file-selected(index, file); }
                 open-photo => { root.view = WorkspaceView.photo; }
                 message-requested(message) => { root.show-message(message); }
             }

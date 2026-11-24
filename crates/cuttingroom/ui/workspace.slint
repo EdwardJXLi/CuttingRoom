@@ -3,7 +3,7 @@ import { ActionButton } from "action-button.slint";
 import { PhotoFilmstrip } from "filmstrip.slint";
 import { Message, MessageSeverity } from "message-dialog.slint";
 import { FullPreview, PhotoCanvas } from "photo-canvas.slint";
-import { ActiveSummary, GridPhoto, GroupDetails, MetadataEntry, MetadataFile, PhotoGrid, PhotoMetadata, PreviewState } from "photo-grid.slint";
+import { ActiveSummary, GroupDetails, GridPhoto, MetadataEntry, MetadataFile, PhotoGrid, PhotoMetadata, PreviewState } from "photo-grid.slint";
 import { Palette } from "theme.slint";
 import { ResizeHandle } from "resize-handle.slint";
 import { Sidebar, SidebarSection } from "sidebar.slint";
@@ -75,6 +75,78 @@ component MetadataBlock inherits VerticalLayout {
     }
 }
 
+component PreviewFileRow inherits Rectangle {
+    in property <string> text;
+    in property <bool> selected;
+    callback activated();
+
+    private property <bool> pointer-focused;
+
+    height: 26px;
+    background: root.selected || pointer.has-hover ? Palette.hover : transparent;
+    border-width: keyboard.has-focus && !root.pointer-focused ? 1px : 0px;
+    border-color: Palette.focus;
+    forward-focus: keyboard;
+    accessible-role: list-item;
+    accessible-label: root.text;
+    accessible-item-selectable: true;
+    accessible-item-selected: root.selected;
+    accessible-action-default => { root.activated(); }
+
+    if root.selected: Rectangle {
+        x: 0px;
+        y: 4px;
+        width: 2px;
+        height: parent.height - 8px;
+        background: Palette.focus;
+    }
+
+    Text {
+        x: 8px;
+        width: parent.width - (root.selected ? 32px : 16px);
+        height: parent.height;
+        text: root.text;
+        color: Palette.text;
+        vertical-alignment: center;
+        overflow: elide;
+        accessible-role: none;
+    }
+
+    if root.selected: Text {
+        x: parent.width - 24px;
+        width: 16px;
+        height: parent.height;
+        text: "✓";
+        color: Palette.text;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        accessible-role: none;
+    }
+
+    pointer := TouchArea {
+        mouse-cursor: MouseCursor.pointer;
+        clicked => {
+            root.pointer-focused = true;
+            keyboard.focus();
+            root.activated();
+        }
+    }
+
+    keyboard := FocusScope {
+        width: 0px;
+        focus-on-click: false;
+        focus-lost => { root.pointer-focused = false; }
+        key-pressed(event) => {
+            if event.text == Key.Return || event.text == Key.Space {
+                root.pointer-focused = false;
+                if !event.repeat { root.activated(); }
+                return accept;
+            }
+            return reject;
+        }
+    }
+}
+
 export component PhotoWorkspace inherits VerticalLayout {
     in property <WorkspaceView> view;
     in property <bool> show-project-info;
@@ -90,24 +162,29 @@ export component PhotoWorkspace inherits VerticalLayout {
     out property <bool> metadata-details-visible: root.metadata-summary-visible && root.details-expanded;
     callback message-requested(Message);
     callback thumbnail-viewport-changed(int, int);
+    callback preview-file-selected(int, int);
     callback open-photo();
 
     private property <bool> browsing: root.view != WorkspaceView.photo;
     private property <bool> has-active-photo: root.active-index >= 0 && root.active-index < root.grid-photos.length;
-    private property <string> active-photo-name: root.active-metadata.filename != "" ? root.active-metadata.filename
-        : root.has-active-photo ? root.grid-photos[root.active-index].name : "";
-    private property <bool> photo-preview-ready: !root.browsing && root.full-preview.index == root.active-index
-        && root.full-preview.state == PreviewState.ready;
-    private property <bool> thumbnail-ready: root.has-active-photo && root.grid-photos[root.active-index].state == PreviewState.ready;
+    private property <[string]> active-files: root.has-active-photo ? root.grid-photos[root.active-index].files : [];
+    private property <bool> current-preview: !root.browsing && root.full-preview.index == root.active-index;
+    private property <int> requested-file: root.current-preview ? root.full-preview.requested-file : -1;
+    private property <bool> photo-preview-ready: root.current-preview && root.full-preview.state == PreviewState.ready;
+    private property <bool> thumbnail-ready: root.has-active-photo && root.grid-photos[root.active-index].state == PreviewState.ready
+        && (root.browsing || (root.requested-file >= 0
+            && root.grid-photos[root.active-index].metadata.filename == root.active-files[root.requested-file]));
     private property <PhotoMetadata> active-metadata: root.photo-preview-ready ? root.full-preview.metadata
         : root.thumbnail-ready ? root.grid-photos[root.active-index].metadata
-        : root.active-summary.index == root.active-index ? root.active-summary.metadata : { filename: "", summary: [] };
+        : root.requested-file < 0 && root.active-summary.index == root.active-index
+            ? root.active-summary.metadata : { filename: "", summary: [] };
     private property <bool> metadata-expanded: true;
     private property <bool> details-expanded: false;
     private property <PreviewState> details-state: root.group-details.index == root.active-index
         ? root.group-details.state : PreviewState.pending;
-    private property <bool> metadata-pending: root.has-active-photo && !root.photo-preview-ready && !root.thumbnail-ready
-        && (root.active-summary.index != root.active-index || root.active-summary.state == PreviewState.pending);
+    private property <bool> metadata-pending: root.requested-file >= 0 ? root.full-preview.state == PreviewState.pending
+        : root.has-active-photo && !root.photo-preview-ready && !root.thumbnail-ready
+            && (root.active-summary.index != root.active-index || root.active-summary.state == PreviewState.pending);
     private property <length> handle-thickness: 7px;
     private property <length> minimum-left-width: 152px;
     private property <length> maximum-left-width: 330px;
@@ -131,6 +208,11 @@ export component PhotoWorkspace inherits VerticalLayout {
             if !repeat {
                 root.open-photo();
             }
+            return true;
+        }
+        if !root.browsing && root.active-files.length > 1 && root.requested-file >= 0 && (key == "[" || key == "]") {
+            let step = key == "[" ? -1 : 1;
+            root.preview-file-selected(root.active-index, mod(root.requested-file + step, root.active-files.length));
             return true;
         }
         let horizontal = key == Key.LeftArrow ? -1 : key == Key.RightArrow ? 1 : 0;
@@ -261,15 +343,35 @@ export component PhotoWorkspace inherits VerticalLayout {
 
             SidebarSection {
                 title: "Photo";
+                detail: !root.browsing && root.active-files.length > 1 ? "[ or ]" : "";
 
-                Text {
+                if !root.has-active-photo: Text {
                     height: 24px;
-                    text: root.active-photo-name == "" ? "No photo selected" : root.active-photo-name;
-                    color: root.active-photo-name == "" ? Palette.muted : Palette.text;
-                    font-weight: root.active-photo-name == "" ? 400 : 600;
+                    text: "No photo selected";
+                    color: Palette.muted;
+                    vertical-alignment: center;
+                }
+
+                for file in root.browsing || root.active-files.length <= 1 ? root.active-files : []: Text {
+                    height: 24px;
+                    text: file;
+                    color: Palette.text;
                     vertical-alignment: center;
                     overflow: elide;
                     accessible-role: text;
+                }
+
+                if !root.browsing && root.active-files.length > 1: VerticalLayout {
+                    accessible-role: list;
+                    accessible-label: "Preview source";
+
+                    for file[index] in root.active-files: PreviewFileRow {
+                        text: file;
+                        selected: root.requested-file == index;
+                        accessible-description: !self.selected ? "" : root.photo-preview-ready ? "Displayed preview"
+                            : root.full-preview.state == PreviewState.pending ? "Rendering preview" : "Preview unavailable";
+                        activated => { root.preview-file-selected(root.active-index, index); }
+                    }
                 }
             }
 

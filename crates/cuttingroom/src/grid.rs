@@ -15,7 +15,7 @@ use std::{
 
 use async_channel::{Receiver, Sender, bounded};
 use cap_std::fs::Dir;
-use cr_project::PhotographGroup;
+use cr_project::{PhotographFormat, PhotographGroup, photograph_format};
 use slint::{ComponentHandle, Image, Model, ModelRc, VecModel, language::StandardListViewItem};
 
 mod thumbnail_memory;
@@ -25,9 +25,9 @@ use crate::{
     ActiveSummary, FullPreview, GridPhoto, GroupDetails, MainWindow, MetadataEntry, MetadataFile,
     PhotoMetadata, PreviewState, ThumbnailProgress,
     app::ProjectRequest,
-    image_decode::{DecodeError, Decoder, PreviewSize},
-    metadata::{Fields, GroupMetadata, MetadataSource, read_group},
-    preview::{self, Preview},
+    image_decode::{DecodeError, Decoder},
+    metadata::{Fields, GroupMetadata, MetadataSource, filename, read_group},
+    preview::{self, PhotoPreview, Preview},
     thumbnail_cache::{CacheStatus, LoadedThumbnail, ThumbnailCache, ThumbnailEntry},
 };
 
@@ -192,6 +192,7 @@ pub(crate) struct Grid {
     photos: Rc<VecModel<GridPhoto>>,
     visible: Range<usize>,
     cached: BTreeSet<usize>,
+    source_override: Option<(usize, usize)>,
     preview: JobQueue,
     metadata: JobQueue,
     writer: ThumbnailWriter,
@@ -217,14 +218,17 @@ struct Job {
 
 #[derive(Clone, Copy)]
 enum JobKind {
-    Preview(PreviewSize),
+    Photo(usize),
     Thumbnail { scan: u64, visible: bool },
     Summary,
     Details,
 }
 
 enum JobResult {
-    Preview(PreviewSize, Preview),
+    Photo {
+        preview: PhotoPreview,
+        elapsed: Duration,
+    },
     Thumbnail(Preview, ThumbnailOutcome),
     Saved(bool),
     Summary(Option<MetadataSource>),
@@ -334,11 +338,10 @@ impl JobQueue {
                 let result = match job.kind {
                     JobKind::Thumbnail { scan, visible } => {
                         let generate = || {
-                            preview::load(
+                            preview::load_thumbnail(
                                 &decoder,
                                 &job.directory,
                                 &job.group.files,
-                                PreviewSize::Thumbnail,
                                 cancelled,
                             )
                         };
@@ -371,10 +374,20 @@ impl JobQueue {
                         };
                         JobResult::Thumbnail(thumbnail.preview, outcome)
                     }
-                    JobKind::Preview(size) => JobResult::Preview(
-                        size,
-                        preview::load(&decoder, &job.directory, &job.group.files, size, cancelled),
-                    ),
+                    JobKind::Photo(file) => {
+                        let started = Instant::now();
+                        let preview = preview::load_photo(
+                            &decoder,
+                            &job.directory,
+                            &job.group.files,
+                            file,
+                            cancelled,
+                        );
+                        JobResult::Photo {
+                            preview,
+                            elapsed: started.elapsed(),
+                        }
+                    }
                     JobKind::Summary => JobResult::Summary(preview::read_summary(
                         &decoder,
                         &job.directory,
@@ -452,6 +465,7 @@ impl GridSession {
             photos,
             visible: 0..0,
             cached: BTreeSet::new(),
+            source_override: None,
             preview,
             metadata,
             writer,
@@ -477,6 +491,14 @@ impl GridSession {
         window.on_active_photo_changed(move || {
             if let Some(window) = weak.upgrade() {
                 state.borrow_mut().refresh(&window);
+            }
+        });
+
+        let state = grid.clone();
+        let weak = window.as_weak();
+        window.on_preview_file_selected(move |index, file| {
+            if let Some(window) = weak.upgrade() {
+                state.borrow_mut().select_preview_file(&window, index, file);
             }
         });
 
@@ -557,6 +579,19 @@ impl Grid {
             .iter()
             .map(|photo| StandardListViewItem::from(photo.relative_path.as_str()))
             .collect();
+        self.source_override = self.source_override.and_then(|(index, file)| {
+            let previous = self.groups.get(index)?;
+            let path = previous.files.get(file)?;
+            let index = active?;
+            let next = groups.get(index)?;
+            if previous.stem != next.stem {
+                return None;
+            }
+            next.files
+                .iter()
+                .position(|candidate| candidate == path)
+                .map(|file| (index, file))
+        });
         self.directory = directory.map(Arc::new);
         self.thumbnails = ThumbnailRun::new(thumbnails, groups.len());
         self.rebuild = RebuildState::Idle;
@@ -614,13 +649,14 @@ impl Grid {
     }
 
     fn refresh(&mut self, window: &MainWindow) {
+        let active = active_index(window);
+        self.source_override = self
+            .source_override
+            .filter(|(index, _)| Some(*index) == active);
         let target = self.preview_target(window);
-        let preview_changed = target != window.get_full_preview().index;
-        if preview_changed {
-            if matches!(
-                self.preview.in_flight,
-                Some(JobKind::Preview(PreviewSize::Photo))
-            ) {
+        let current = window.get_full_preview();
+        if target != (current.index, current.requested_file) {
+            if matches!(self.preview.in_flight, Some(JobKind::Photo(_))) {
                 self.preview.generation.fetch_add(1, Ordering::Relaxed);
             }
             self.reset_preview(window, target);
@@ -631,7 +667,6 @@ impl Grid {
         }
 
         let retained = self.retained_range();
-        let active = active_index(window);
         self.cached.retain(|index| {
             if retained.contains(index) || active == Some(*index) {
                 return true;
@@ -647,19 +682,60 @@ impl Grid {
         self.request_next(window);
     }
 
-    fn preview_target(&self, window: &MainWindow) -> i32 {
-        if window.get_photo_view_active()
-            && active_index(window).is_some_and(|index| index < self.groups.len())
+    fn select_preview_file(&mut self, window: &MainWindow, index: i32, file: i32) {
+        let Ok(capture) = usize::try_from(index) else {
+            return;
+        };
+        if !window.get_photo_view_active() || active_index(window) != Some(capture) {
+            return;
+        }
+        if let Ok(file) = usize::try_from(file)
+            && self
+                .groups
+                .get(capture)
+                .and_then(|group| group.files.get(file))
+                .is_some()
         {
-            window.get_active_index()
-        } else {
-            -1
+            self.source_override = Some((capture, file));
+            self.refresh(window);
         }
     }
 
-    fn reset_preview(&self, window: &MainWindow, index: i32) {
+    fn preview_target(&self, window: &MainWindow) -> (i32, i32) {
+        if window.get_photo_view_active()
+            && let Some(index) = active_index(window)
+            && let Some(group) = self.groups.get(index)
+        {
+            let file = self
+                .source_override
+                .filter(|(capture, _)| *capture == index)
+                .map(|(_, file)| file)
+                .or_else(|| preview::preferred_photo_file(&group.files));
+            (index as i32, file.map_or(-1, |file| file as i32))
+        } else {
+            (-1, -1)
+        }
+    }
+
+    fn reset_preview(&self, window: &MainWindow, (index, requested_file): (i32, i32)) {
+        let source_format = usize::try_from(index)
+            .ok()
+            .and_then(|index| self.groups.get(index))
+            .zip(usize::try_from(requested_file).ok())
+            .and_then(|(group, file)| group.files.get(file))
+            .map(|path| {
+                let name = format_label(path);
+                if photograph_format(path) == Some(PhotographFormat::Raw) {
+                    format!("{name} RAW").into()
+                } else {
+                    name
+                }
+            })
+            .unwrap_or_default();
         window.set_full_preview(FullPreview {
             index,
+            requested_file,
+            source_format,
             state: if self.directory.is_some() {
                 PreviewState::Pending
             } else {
@@ -768,8 +844,9 @@ impl Grid {
             let preview = window.get_full_preview();
             if preview.state == PreviewState::Pending
                 && let Ok(index) = preview.index.try_into()
+                && let Ok(file) = preview.requested_file.try_into()
             {
-                return Some((index, JobKind::Preview(PreviewSize::Photo)));
+                return Some((index, JobKind::Photo(file)));
             }
         }
         let active = active_index(window);
@@ -799,8 +876,8 @@ impl Grid {
                 .photos
                 .row_data(index)
                 .is_some_and(|photo| photo.state == PreviewState::Ready);
-            let photo_ready = preview.index == index as i32 && preview.state == PreviewState::Ready;
-            if !(thumbnail_ready || photo_ready) {
+            let photo_requested = preview.index == index as i32 && preview.requested_file >= 0;
+            if !(thumbnail_ready || photo_requested) {
                 return Some((index, JobKind::Summary));
             }
         }
@@ -820,7 +897,7 @@ impl Grid {
         result: JobResult,
     ) {
         let current = match &result {
-            JobResult::Preview(..) | JobResult::Thumbnail(..) => {
+            JobResult::Photo { .. } | JobResult::Thumbnail(..) => {
                 self.preview.in_flight = None;
                 &self.preview.generation
             }
@@ -838,8 +915,30 @@ impl Grid {
         }
         let active = active_index(window);
         match (result, index) {
-            (JobResult::Preview(size, preview), Some(index)) => {
-                self.apply_preview(window, index, size, preview);
+            (
+                JobResult::Photo {
+                    preview: photo,
+                    elapsed,
+                },
+                Some(index),
+            ) if window.get_photo_view_active() && active == Some(index) => {
+                let mut full = window.get_full_preview();
+                if let Some((width, height)) = photo.source_dimensions {
+                    full.source_width = width as i32;
+                    full.source_height = height as i32;
+                }
+                let preview = photo.preview;
+                full.metadata = photo_metadata(preview.filename, preview.summary);
+                full.state = match preview.pixels {
+                    Ok(pixels) => {
+                        full.render_time_ms =
+                            i32::try_from(elapsed.as_millis()).unwrap_or(i32::MAX);
+                        full.image = Image::from_rgba8(pixels);
+                        PreviewState::Ready
+                    }
+                    Err(error) => preview_error_state(error),
+                };
+                window.set_full_preview(full);
             }
             (JobResult::Thumbnail(preview, outcome), index) => {
                 if self.thumbnails.needs_thumbnail(index) {
@@ -858,7 +957,7 @@ impl Grid {
                     self.thumbnails.publish(window);
                 }
                 if let Some(index) = index {
-                    self.apply_preview(window, index, PreviewSize::Thumbnail, preview);
+                    self.apply_thumbnail(window, index, preview);
                 }
             }
             (JobResult::Saved(saved), index) => {
@@ -892,31 +991,7 @@ impl Grid {
         }
     }
 
-    fn apply_preview(
-        &mut self,
-        window: &MainWindow,
-        index: usize,
-        size: PreviewSize,
-        preview: Preview,
-    ) {
-        if let PreviewSize::Photo = size {
-            if window.get_photo_view_active() && active_index(window) == Some(index) {
-                let mut full_preview = FullPreview {
-                    index: index as i32,
-                    metadata: photo_metadata(preview.filename, preview.summary),
-                    ..FullPreview::default()
-                };
-                full_preview.state = match preview.pixels {
-                    Ok(pixels) => {
-                        full_preview.image = Image::from_rgba8(pixels);
-                        PreviewState::Ready
-                    }
-                    Err(error) => preview_error_state(error),
-                };
-                window.set_full_preview(full_preview);
-            }
-            return;
-        }
+    fn apply_thumbnail(&mut self, window: &MainWindow, index: usize, preview: Preview) {
         if !(self.retained_range().contains(&index) || active_index(window) == Some(index)) {
             return;
         }
@@ -995,6 +1070,13 @@ fn grid_photo(group: &PhotographGroup, directory_open: bool) -> GridPhoto {
         name: name.as_ref().into(),
         relative_path: path.to_string_lossy().as_ref().into(),
         formats: Rc::new(VecModel::from_iter(formats)).into(),
+        files: Rc::new(VecModel::from_iter(
+            group
+                .files
+                .iter()
+                .map(|path| slint::SharedString::from(filename(path))),
+        ))
+        .into(),
         state: if directory_open {
             PreviewState::Pending
         } else {
