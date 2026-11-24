@@ -3,7 +3,7 @@ import { ActionButton } from "action-button.slint";
 import { PhotoFilmstrip } from "filmstrip.slint";
 import { Message, MessageSeverity } from "message-dialog.slint";
 import { FullPreview, PhotoCanvas } from "photo-canvas.slint";
-import { ActiveSummary, GroupDetails, GridPhoto, MetadataEntry, MetadataFile, PhotoGrid, PhotoMetadata, PreviewState } from "photo-grid.slint";
+import { ActiveSummary, FileDetails, GridPhoto, MetadataEntry, MetadataFile, PhotoGrid, PhotoMetadata, PreviewState } from "photo-grid.slint";
 import { Palette } from "theme.slint";
 import { ResizeHandle } from "resize-handle.slint";
 import { Sidebar, SidebarSection } from "sidebar.slint";
@@ -156,10 +156,15 @@ export component PhotoWorkspace inherits VerticalLayout {
     in property <[GridPhoto]> grid-photos;
     in property <FullPreview> full-preview;
     in property <ActiveSummary> active-summary;
-    in property <GroupDetails> group-details;
+    in property <FileDetails> file-details;
     in-out property <int> active-index: -1;
     out property <bool> metadata-summary-visible: root.has-active-photo && root.show-inspector && root.metadata-expanded;
     out property <bool> metadata-details-visible: root.metadata-summary-visible && root.details-expanded;
+    out property <int> metadata-file-index: root.requested-file >= 0 ? root.requested-file
+        : root.active-metadata.file-index >= 0 ? root.active-metadata.file-index
+        : root.browsing && root.has-active-photo && !root.metadata-pending
+            && root.grid-photos[root.active-index].state != PreviewState.pending
+            ? root.grid-photos[root.active-index].metadata.file-index : -1;
     callback message-requested(Message);
     callback thumbnail-viewport-changed(int, int);
     callback preview-file-selected(int, int);
@@ -176,12 +181,14 @@ export component PhotoWorkspace inherits VerticalLayout {
             && root.grid-photos[root.active-index].metadata.filename == root.active-files[root.requested-file]));
     private property <PhotoMetadata> active-metadata: root.photo-preview-ready ? root.full-preview.metadata
         : root.thumbnail-ready ? root.grid-photos[root.active-index].metadata
-        : root.requested-file < 0 && root.active-summary.index == root.active-index
-            ? root.active-summary.metadata : { filename: "", summary: [] };
+        : root.requested-file < 0 && root.active-summary.index == root.active-index && root.active-summary.state == PreviewState.ready
+            ? root.active-summary.metadata : { file-index: -1, filename: "", summary: [] };
     private property <bool> metadata-expanded: true;
     private property <bool> details-expanded: false;
-    private property <PreviewState> details-state: root.group-details.index == root.active-index
-        ? root.group-details.state : PreviewState.pending;
+    private property <PreviewState> details-state: root.metadata-file-index < 0
+        ? (root.metadata-pending ? PreviewState.pending : PreviewState.unavailable)
+        : root.file-details.index == root.active-index && root.file-details.file-index == root.metadata-file-index
+            ? root.file-details.state : PreviewState.pending;
     private property <bool> metadata-pending: root.requested-file >= 0 ? root.full-preview.state == PreviewState.pending
         : root.has-active-photo && !root.photo-preview-ready && !root.thumbnail-ready
             && (root.active-summary.index != root.active-index || root.active-summary.state == PreviewState.pending);
@@ -401,10 +408,10 @@ export component PhotoWorkspace inherits VerticalLayout {
                         color: Palette.muted;
                         vertical-alignment: center;
                     }
-                    for file in root.metadata-details-visible && root.details-state == PreviewState.ready ? root.group-details.files : []: MetadataBlock {
-                        source: file;
+                    if root.metadata-details-visible && root.details-state == PreviewState.ready: MetadataBlock {
+                        source: root.file-details.source;
                     }
-                    if root.metadata-details-visible && root.details-state == PreviewState.ready && root.group-details.sidecars.length > 0: Text {
+                    if root.metadata-details-visible && root.details-state == PreviewState.ready && root.file-details.sidecars.length > 0: Text {
                         height: 26px;
                         text: "XMP sidecars";
                         color: Palette.text;
@@ -413,7 +420,7 @@ export component PhotoWorkspace inherits VerticalLayout {
                         vertical-alignment: bottom;
                         accessible-role: text;
                     }
-                    for sidecar in root.metadata-details-visible && root.details-state == PreviewState.ready ? root.group-details.sidecars : []: MetadataBlock {
+                    for sidecar in root.metadata-details-visible && root.details-state == PreviewState.ready ? root.file-details.sidecars : []: MetadataBlock {
                         source: sidecar;
                     }
                 }

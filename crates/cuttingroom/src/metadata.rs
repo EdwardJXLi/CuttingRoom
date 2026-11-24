@@ -7,10 +7,10 @@ use std::{
 use exif::{Exif, In, Tag, Value};
 use image::metadata::Orientation;
 
-mod group;
+mod file;
 mod xmp;
 
-pub(crate) use group::{GroupMetadata, read_group};
+pub(crate) use file::{FileMetadata, read_file};
 
 const MAX_VALUE_BYTES: usize = 256;
 const MAX_EXIF_ROWS: usize = 1024;

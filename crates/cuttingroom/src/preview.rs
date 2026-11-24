@@ -293,7 +293,7 @@ mod tests {
         PreviewSize, load_photo, load_thumbnail, make_preview, preferred_photo_file, read_summary,
     };
     use crate::image_decode::{Decoder, decode_raster};
-    use crate::metadata::{Fields, read_group};
+    use crate::metadata::{Fields, read_file};
 
     const XMP: &str = r#"
         <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
@@ -305,8 +305,8 @@ mod tests {
     "#;
 
     #[test]
-    fn group_details_preserve_each_files_metadata_and_list_the_shared_sidecar_once()
-    -> Result<(), Box<dyn Error>> {
+    fn file_details_include_only_the_selected_photo_and_its_sidecars() -> Result<(), Box<dyn Error>>
+    {
         let folder = tempfile::tempdir()?;
         let directory = Dir::open_ambient_dir(folder.path(), ambient_authority())?;
         directory.create_dir("trip")?;
@@ -335,24 +335,34 @@ mod tests {
         assert_eq!(preview.filename, "photo.jpg");
         assert!(has_field(&preview.summary, "Camera", "JPEG camera"));
 
-        let metadata = read_group(&decoder, &directory, &paths, || false);
-        let [jpeg, png] = metadata.files.as_slice() else {
-            return Err("expected both group's photos".into());
+        let jpeg =
+            read_file(&decoder, &directory, &paths[0], || false).ok_or("missing JPEG metadata")?;
+        assert_eq!(jpeg.source.filename, "photo.jpg");
+        assert!(has_field(&jpeg.source.fields, "Model", r#""JPEG camera""#));
+        let [jpeg_sidecar, shared] = jpeg.sidecars.as_slice() else {
+            return Err("expected the JPEG sidecar and the shared sidecar".into());
         };
-        assert_eq!(jpeg.filename, "photo.jpg");
-        assert_eq!(png.filename, "photo.png");
-        assert!(has_field(&jpeg.fields, "Model", r#""JPEG camera""#));
-        assert!(has_field(&png.fields, "Model", r#""PNG camera""#));
-        let [jpeg, png, stem] = metadata.sidecars.as_slice() else {
-            return Err("expected two full-filename sidecars and one shared sidecar".into());
+        assert_eq!(jpeg_sidecar.filename, "photo.jpg.xmp");
+        assert!(has_field(&jpeg_sidecar.fields, "xmp:Rating", "1"));
+        assert!(shared.filename.eq_ignore_ascii_case("photo.xmp"));
+        assert!(has_field(&shared.fields, "xmp:Rating", "2"));
+
+        let png =
+            read_file(&decoder, &directory, &paths[1], || false).ok_or("missing PNG metadata")?;
+        assert_eq!(png.source.filename, "photo.png");
+        assert!(has_field(&png.source.fields, "Model", r#""PNG camera""#));
+        let [png_sidecar, shared] = png.sidecars.as_slice() else {
+            return Err("expected the PNG sidecar and the shared sidecar".into());
         };
-        assert_eq!(jpeg.filename, "photo.jpg.xmp");
-        assert_eq!(png.filename, "photo.png.xmp");
-        assert!(stem.filename.eq_ignore_ascii_case("photo.xmp"));
-        assert!(has_field(&jpeg.fields, "xmp:Rating", "1"));
-        assert!(has_field(&png.fields, "xmp:Rating", "4"));
-        assert!(has_field(&stem.fields, "xmp:Rating", "2"));
-        assert!(has_field(&png.fields, "dc:subject[1]", "Zürich & Alps"));
+        assert_eq!(png_sidecar.filename, "photo.png.xmp");
+        assert!(has_field(&png_sidecar.fields, "xmp:Rating", "4"));
+        assert!(has_field(
+            &png_sidecar.fields,
+            "dc:subject[1]",
+            "Zürich & Alps"
+        ));
+        assert!(shared.filename.eq_ignore_ascii_case("photo.xmp"));
+        assert!(has_field(&shared.fields, "xmp:Rating", "2"));
         assert_eq!(directory.read_to_string("trip/photo.png.xmp")?, XMP);
 
         directory.write(&paths[0], "Unreadable image")?;
@@ -376,11 +386,13 @@ mod tests {
         let paths = [PathBuf::from("photo.jpg")];
         let preview = load_photo(&decoder, &directory, &paths, 0, || false).preview;
         assert!(preview.pixels.is_err());
-        let metadata = read_group(&decoder, &directory, &paths, || false);
-        let [photo] = metadata.files.as_slice() else {
-            return Err("expected unreadable photo".into());
-        };
-        assert!(has_field(&photo.fields, "Metadata", "Unavailable"));
+        let metadata = read_file(&decoder, &directory, &paths[0], || false)
+            .ok_or("missing metadata record for the unreadable image")?;
+        assert!(has_field(
+            &metadata.source.fields,
+            "Metadata",
+            "Unavailable"
+        ));
         let [malformed, readable] = metadata.sidecars.as_slice() else {
             return Err("expected both sidecars".into());
         };

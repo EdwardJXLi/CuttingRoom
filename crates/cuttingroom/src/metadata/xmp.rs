@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use cap_std::fs::Dir;
 use xmp_toolkit::{IterOptions, XmpMeta};
@@ -11,17 +11,13 @@ const MAX_ROWS: usize = 128;
 
 pub(super) fn read_sidecars(
     directory: &Dir,
-    photos: &[PathBuf],
+    photo: &Path,
     cancelled: impl Fn() -> bool,
 ) -> Vec<MetadataSource> {
-    let full_names = photos.iter().map(|photo| {
-        let mut name = photo.as_os_str().to_os_string();
-        name.push(".xmp");
-        PathBuf::from(name)
-    });
-    let shared_name = photos.first().map(|photo| photo.with_extension("xmp"));
-    full_names
-        .chain(shared_name)
+    let mut full_name = photo.as_os_str().to_os_string();
+    full_name.push(".xmp");
+    [PathBuf::from(full_name), photo.with_extension("xmp")]
+        .into_iter()
         .take_while(|_| !cancelled())
         .filter_map(|path| read_sidecar(directory, path))
         .collect()

@@ -3,12 +3,12 @@ import { ProgressIndicator } from "std-widgets.slint";
 import { BottomBar } from "bottom-bar.slint";
 import { Message, MessageDialog, MessageSeverity } from "message-dialog.slint";
 import { FullPreview } from "photo-canvas.slint";
-import { ActiveSummary, GroupDetails, GridPhoto, MetadataEntry, MetadataFile, PhotoMetadata, PreviewState } from "photo-grid.slint";
+import { ActiveSummary, FileDetails, GridPhoto, MetadataEntry, MetadataFile, PhotoMetadata, PreviewState } from "photo-grid.slint";
 import { Palette } from "theme.slint";
 import { WorkspaceHeader, WorkspaceView } from "workspace-header.slint";
 import { PhotoWorkspace } from "workspace.slint";
 
-export { ActiveSummary, GroupDetails, FullPreview, GridPhoto, MetadataEntry, MetadataFile, PhotoMetadata, PreviewState, Message, MessageSeverity }
+export { ActiveSummary, FileDetails, FullPreview, GridPhoto, MetadataEntry, MetadataFile, PhotoMetadata, PreviewState, Message, MessageSeverity }
 
 export struct ThumbnailProgress {
     total: int,
@@ -37,9 +37,10 @@ export component MainWindow inherits Window {
     in property <[GridPhoto]> grid-photos;
     in property <FullPreview> full-preview: { index: -1, requested-file: -1 };
     in property <ActiveSummary> active-summary: { index: -1 };
-    in property <GroupDetails> group-details: { index: -1 };
+    in property <FileDetails> file-details: { index: -1, file-index: -1 };
     out property <bool> metadata-summary-visible: workspace.metadata-summary-visible;
     out property <bool> metadata-details-visible: workspace.metadata-details-visible;
+    out property <int> metadata-file-index: workspace.metadata-file-index;
     in-out property <int> active-index: -1;
     out property <bool> photo-view-active: root.view == WorkspaceView.photo;
     in property <string> status-text;
@@ -86,6 +87,7 @@ export component MainWindow inherits Window {
     }
     changed metadata-summary-visible => { root.active-photo-changed(); }
     changed metadata-details-visible => { root.active-photo-changed(); }
+    changed metadata-file-index => { root.active-photo-changed(); }
 
     public function show-message(message: Message) {
         root.current-message = message;
@@ -209,7 +211,7 @@ export component MainWindow inherits Window {
                 grid-photos: root.grid-photos;
                 full-preview: root.full-preview;
                 active-summary: root.active-summary;
-                group-details: root.group-details;
+                file-details: root.file-details;
                 active-index <=> root.active-index;
                 thumbnail-viewport-changed(first, end) => { root.thumbnail-viewport-changed(first, end); }
                 preview-file-selected(index, file) => { root.preview-file-selected(index, file); }

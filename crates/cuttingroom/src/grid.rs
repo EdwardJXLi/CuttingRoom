@@ -22,11 +22,11 @@ mod thumbnail_memory;
 
 use self::thumbnail_memory::ThumbnailMemory;
 use crate::{
-    ActiveSummary, FullPreview, GridPhoto, GroupDetails, MainWindow, MetadataEntry, MetadataFile,
+    ActiveSummary, FileDetails, FullPreview, GridPhoto, MainWindow, MetadataEntry, MetadataFile,
     PhotoMetadata, PreviewState, ThumbnailProgress,
     app::ProjectRequest,
     image_decode::{DecodeError, Decoder},
-    metadata::{Fields, GroupMetadata, MetadataSource, filename, read_group},
+    metadata::{Fields, FileMetadata, MetadataSource, filename, read_file},
     preview::{self, PhotoPreview, Preview},
     thumbnail_cache::{CacheStatus, LoadedThumbnail, ThumbnailCache, ThumbnailEntry},
 };
@@ -221,7 +221,7 @@ enum JobKind {
     Photo(usize),
     Thumbnail { scan: u64, visible: bool },
     Summary,
-    Details,
+    Details(usize),
 }
 
 enum JobResult {
@@ -232,7 +232,10 @@ enum JobResult {
     Thumbnail(Preview, ThumbnailOutcome),
     Saved(bool),
     Summary(Option<MetadataSource>),
-    Details(GroupMetadata),
+    Details {
+        file: usize,
+        metadata: Option<FileMetadata>,
+    },
 }
 
 enum ThumbnailOutcome {
@@ -394,12 +397,13 @@ impl JobQueue {
                         &job.group.files,
                         cancelled,
                     )),
-                    JobKind::Details => JobResult::Details(read_group(
-                        &decoder,
-                        &job.directory,
-                        &job.group.files,
-                        cancelled,
-                    )),
+                    JobKind::Details(file) => {
+                        let metadata =
+                            job.group.files.get(file).and_then(|path| {
+                                read_file(&decoder, &job.directory, path, cancelled)
+                            });
+                        JobResult::Details { file, metadata }
+                    }
                 };
                 if results
                     .send_blocking((job.generation, job.index, result))
@@ -664,6 +668,16 @@ impl Grid {
         if window.get_active_index() != window.get_active_summary().index {
             self.metadata.generation.fetch_add(1, Ordering::Relaxed);
             self.reset_metadata(window);
+        } else {
+            let details = window.get_file_details();
+            if (details.index, details.file_index)
+                != (window.get_active_index(), window.get_metadata_file_index())
+            {
+                if matches!(self.metadata.in_flight, Some(JobKind::Details(_))) {
+                    self.metadata.generation.fetch_add(1, Ordering::Relaxed);
+                }
+                self.reset_details(window);
+            }
         }
 
         let retained = self.retained_range();
@@ -757,10 +771,19 @@ impl Grid {
             state,
             ..ActiveSummary::default()
         });
-        window.set_group_details(GroupDetails {
-            index,
-            state,
-            ..GroupDetails::default()
+        self.reset_details(window);
+    }
+
+    fn reset_details(&self, window: &MainWindow) {
+        window.set_file_details(FileDetails {
+            index: window.get_active_index(),
+            file_index: window.get_metadata_file_index(),
+            state: if self.directory.is_some() {
+                PreviewState::Pending
+            } else {
+                PreviewState::Unavailable
+            },
+            ..FileDetails::default()
         });
     }
 
@@ -881,10 +904,14 @@ impl Grid {
                 return Some((index, JobKind::Summary));
             }
         }
+        let details = window.get_file_details();
         if window.get_metadata_details_visible()
-            && window.get_group_details().state == PreviewState::Pending
+            && details.state == PreviewState::Pending
+            && details.index == index as i32
+            && details.file_index == window.get_metadata_file_index()
+            && let Ok(file) = usize::try_from(details.file_index)
         {
-            return Some((index, JobKind::Details));
+            return Some((index, JobKind::Details(file)));
         }
         None
     }
@@ -901,7 +928,7 @@ impl Grid {
                 self.preview.in_flight = None;
                 &self.preview.generation
             }
-            JobResult::Summary(_) | JobResult::Details(_) => {
+            JobResult::Summary(_) | JobResult::Details { .. } => {
                 self.metadata.in_flight = None;
                 &self.metadata.generation
             }
@@ -928,7 +955,8 @@ impl Grid {
                     full.source_height = height as i32;
                 }
                 let preview = photo.preview;
-                full.metadata = photo_metadata(preview.filename, preview.summary);
+                full.metadata =
+                    photo_metadata(full.requested_file, preview.filename, preview.summary);
                 full.state = match preview.pixels {
                     Ok(pixels) => {
                         full.render_time_ms =
@@ -972,20 +1000,26 @@ impl Grid {
                 };
                 if let Some(summary) = summary {
                     active.state = PreviewState::Ready;
-                    active.metadata = PhotoMetadata {
-                        filename: summary.filename.into(),
-                        summary: metadata_model(summary.fields),
-                    };
+                    let file = self.metadata_file_index(index, &summary.filename);
+                    active.metadata = photo_metadata(file, summary.filename, summary.fields);
                 }
                 window.set_active_summary(active);
             }
-            (JobResult::Details(details), Some(index)) if active == Some(index) => {
-                window.set_group_details(GroupDetails {
+            (JobResult::Details { file, metadata }, Some(index))
+                if active == Some(index) && window.get_metadata_file_index() == file as i32 =>
+            {
+                let mut details = FileDetails {
                     index: index as i32,
-                    state: PreviewState::Ready,
-                    files: metadata_files(details.files),
-                    sidecars: metadata_files(details.sidecars),
-                });
+                    file_index: file as i32,
+                    state: PreviewState::Unavailable,
+                    ..FileDetails::default()
+                };
+                if let Some(metadata) = metadata {
+                    details.state = PreviewState::Ready;
+                    details.source = metadata_file(metadata.source);
+                    details.sidecars = metadata_files(metadata.sidecars);
+                }
+                window.set_file_details(details);
             }
             _ => (),
         }
@@ -996,7 +1030,8 @@ impl Grid {
             return;
         }
         if let Some(mut photo) = self.photos.row_data(index) {
-            photo.metadata = photo_metadata(preview.filename, preview.summary);
+            let file = self.metadata_file_index(index, &preview.filename);
+            photo.metadata = photo_metadata(file, preview.filename, preview.summary);
             photo.state = match preview.pixels {
                 Ok(pixels) => {
                     photo.preview = Image::from_rgba8(pixels);
@@ -1009,6 +1044,22 @@ impl Grid {
         }
     }
 
+    fn metadata_file_index(&self, index: usize, display_name: &str) -> i32 {
+        let Some((_, extension)) = display_name.rsplit_once('.') else {
+            return -1;
+        };
+        // Files in one capture share an exact stem. Their supported extensions are lossless.
+        self.groups
+            .get(index)
+            .and_then(|group| {
+                group
+                    .files
+                    .iter()
+                    .position(|path| path.extension().is_some_and(|suffix| suffix == extension))
+            })
+            .map_or(-1, |file| file as i32)
+    }
+
     fn retained_range(&self) -> Range<usize> {
         if self.visible.is_empty() {
             return self.visible.clone();
@@ -1018,21 +1069,23 @@ impl Grid {
     }
 }
 
-fn photo_metadata(filename: String, fields: Fields) -> PhotoMetadata {
+fn photo_metadata(file_index: i32, filename: String, fields: Fields) -> PhotoMetadata {
     PhotoMetadata {
+        file_index,
         filename: filename.into(),
         summary: metadata_model(fields),
     }
 }
 
 fn metadata_files(files: Vec<MetadataSource>) -> ModelRc<MetadataFile> {
-    Rc::new(VecModel::from_iter(files.into_iter().map(|file| {
-        MetadataFile {
-            filename: file.filename.into(),
-            fields: metadata_model(file.fields),
-        }
-    })))
-    .into()
+    Rc::new(VecModel::from_iter(files.into_iter().map(metadata_file))).into()
+}
+
+fn metadata_file(file: MetadataSource) -> MetadataFile {
+    MetadataFile {
+        filename: file.filename.into(),
+        fields: metadata_model(file.fields),
+    }
 }
 
 fn metadata_model(fields: Fields) -> ModelRc<MetadataEntry> {
