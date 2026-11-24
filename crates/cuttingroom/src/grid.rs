@@ -13,7 +13,7 @@ use std::{
     time::Duration,
 };
 
-use async_channel::{Sender, bounded};
+use async_channel::{Receiver, Sender, bounded};
 use cap_std::fs::Dir;
 use cr_project::PhotographGroup;
 use slint::{
@@ -34,6 +34,7 @@ const UPDATE_INTERVAL: Duration = Duration::from_millis(16);
 
 pub(crate) struct GridSession {
     pub(crate) grid: Rc<RefCell<Grid>>,
+    completed: Receiver<(u64, usize, JobResult)>,
     task: slint::JoinHandle<()>,
     worker: thread::JoinHandle<()>,
 }
@@ -108,8 +109,9 @@ impl GridSession {
 
         let state = grid.clone();
         let weak = window.as_weak();
+        let updates = completed.clone();
         let task = slint::spawn_local(async move {
-            while let Ok((generation, index, result)) = completed.recv().await {
+            while let Ok((generation, index, result)) = updates.recv().await {
                 let Some(window) = weak.upgrade() else { break };
                 state.borrow_mut().apply(&window, generation, index, result);
 
@@ -153,11 +155,17 @@ impl GridSession {
                     }
                 }
             })?;
-        Ok(Self { grid, task, worker })
+        Ok(Self {
+            grid,
+            completed,
+            task,
+            worker,
+        })
     }
 
     pub(crate) fn finish(self) -> io::Result<()> {
         self.grid.borrow().jobs.close();
+        self.completed.close();
         self.task.abort();
         self.worker
             .join()

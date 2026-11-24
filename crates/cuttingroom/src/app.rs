@@ -5,6 +5,7 @@ use std::{
     path::{Path, PathBuf},
     process::ExitCode,
     rc::Rc,
+    sync::atomic::Ordering,
     thread,
     time::{Duration, Instant},
 };
@@ -17,6 +18,7 @@ use slint::{ComponentHandle, Weak};
 use crate::{
     MainWindow, Message, MessageSeverity,
     grid::{Grid, GridSession},
+    interrupt,
 };
 
 const PHOTO_LIST_LIMIT: u32 = 10_000;
@@ -40,6 +42,8 @@ struct ProjectSession {
 
 pub(crate) fn run(initial_folder: Option<PathBuf>) -> Result<ExitCode, Box<dyn Error>> {
     let window = MainWindow::new()?;
+    let interrupted = interrupt::install()?;
+
     window.set_app_version(env!("CARGO_PKG_VERSION").into());
     let open_failed = Rc::new(Cell::new(false));
     let session = initial_folder
@@ -58,12 +62,15 @@ pub(crate) fn run(initial_folder: Option<PathBuf>) -> Result<ExitCode, Box<dyn E
 
     let result = window.run();
     if let Some((grid, project)) = session {
+        project.cancel(&window);
         let grid_result = grid.finish();
-        project.finish(&window)?;
+        project.finish()?;
         grid_result?;
     }
     result?;
-    if open_failed.get() {
+    if interrupted.load(Ordering::Relaxed) {
+        Ok(ExitCode::from(130))
+    } else if open_failed.get() {
         Ok(ExitCode::FAILURE)
     } else {
         Ok(ExitCode::SUCCESS)
@@ -108,12 +115,15 @@ fn start_project(
 }
 
 impl ProjectSession {
-    fn finish(self, window: &MainWindow) -> io::Result<()> {
+    fn cancel(&self, window: &MainWindow) {
         self.events.close();
         self.rescans.close();
         window.on_message_dismissed(|_| {});
         // Dropping an undelivered confirmation also releases its waiting worker.
         drop(self.events.try_recv());
+    }
+
+    fn finish(self) -> io::Result<()> {
         self.task.abort();
         self.worker
             .join()

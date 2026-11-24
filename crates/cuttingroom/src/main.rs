@@ -5,6 +5,7 @@ use std::{env, error::Error, path::PathBuf, process::ExitCode};
 mod app;
 mod grid;
 mod image_decode;
+mod interrupt;
 mod metadata;
 mod preview;
 mod source_file;

@@ -10,6 +10,7 @@ cap-fs-ext = "=4.0.3"
 cap-std = "=4.0.3"
 chrono = "=0.4.45"
 cr-project = { path = "../cr-project" }
+ctrlc = "=3.5.3"
 image = { version = "=0.25.10", default-features = false, features = ["exr", "jpeg", "png", "tiff", "webp"] }
 jxl-image-rs-integration = "=0.8.0"
 kamadak-exif = "=0.6.2"
@@ -24,6 +25,9 @@ xmp_toolkit = "=1.12.1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "=0.2.191"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_System_Console"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-core-foundation = { version = "=0.3.2", default-features = false, features = ["CFData", "CFDictionary", "CFNumber", "CFString"] }
